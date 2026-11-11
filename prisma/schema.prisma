@@ -1,0 +1,137 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  USER
+  AUDITOR
+  OPERATOR
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  INVESTMENT
+  TREASURY
+  ESCROW
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILURE
+  WARNING
+}
+
+model User {
+  id                    String        @id @default(uuid())
+  email                 String        @unique
+  passwordHash          String
+  fullName              String
+  role                  Role          @default(USER)
+  isActive              Boolean       @default(true)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  accounts              Account[]
+  initiatedTransactions Transaction[] @relation("Initiator")
+  auditLogs             AuditLog[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model Account {
+  id                    String        @id @default(uuid())
+  accountNumber         String        @unique
+  name                  String
+  type                  AccountType   @default(CHECKING)
+  balance               Decimal       @default(0.0000) @db.Decimal(18, 4)
+  currency              String        @default("USD")
+  status                AccountStatus @default(ACTIVE)
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  outgoingTransactions  Transaction[] @relation("SourceAccount")
+  incomingTransactions  Transaction[] @relation("DestinationAccount")
+
+  @@index([userId])
+  @@index([accountNumber])
+  @@index([status])
+}
+
+model Transaction {
+  id                    String            @id @default(uuid())
+  referenceNumber       String            @unique
+  type                  TransactionType
+  amount                Decimal           @db.Decimal(18, 4)
+  fee                   Decimal           @default(0.0000) @db.Decimal(18, 4)
+  currency              String            @default("USD")
+  status                TransactionStatus @default(PENDING)
+  description           String?
+  metadata              Json?
+
+  sourceAccountId       String?
+  sourceAccount         Account?          @relation("SourceAccount", fields: [sourceAccountId], references: [id], onDelete: SetNull)
+
+  destinationAccountId  String?
+  destinationAccount    Account?          @relation("DestinationAccount", fields: [destinationAccountId], references: [id], onDelete: SetNull)
+
+  initiatedById         String
+  initiatedBy           User              @relation("Initiator", fields: [initiatedById], references: [id], onDelete: Restrict)
+
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@index([referenceNumber])
+  @@index([sourceAccountId])
+  @@index([destinationAccountId])
+  @@index([initiatedById])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id                    String            @id @default(uuid())
+  action                String
+  resource              String
+  resourceId            String?
+  userId                String?
+  user                  User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ipAddress             String?
+  userAgent             String?
+  status                AuditStatus       @default(SUCCESS)
+  metadata              Json?
+  createdAt             DateTime          @default(now())
+
+  @@index([action])
+  @@index([resource])
+  @@index([userId])
+  @@index([createdAt])
+}
