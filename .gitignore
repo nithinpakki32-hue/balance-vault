@@ -1,0 +1,38 @@
+# Node & Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.test
+
+# Build outputs
+dist/
+build/
+.cache/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+# Vite & Client
+client/dist
+client/node_modules
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
