@@ -1,0 +1,62 @@
+{
+  "name": "balance-vault",
+  "version": "1.0.0",
+  "description": "BalanceVault - Enterprise-grade secure ledger and balance management platform",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc && npm run build:client",
+    "build:server": "tsc",
+    "build:client": "npm run --prefix client build",
+    "start": "node dist/server.js",
+    "dev:server": "tsx watch src/server.ts",
+    "dev:client": "npm run --prefix client dev",
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "lint": "eslint src/ --ext .ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.14.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "rate-limit-redis": "^4.2.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.12.12",
+    "concurrently": "^8.2.2",
+    "prisma": "^5.14.0",
+    "tsx": "^4.10.5",
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "ledger",
+    "banking",
+    "fintech",
+    "vault",
+    "prisma",
+    "postgres",
+    "redis",
+    "express",
+    "react",
+    "vite"
+  ],
+  "author": "BalanceVault Team",
+  "license": "MIT"
+}
