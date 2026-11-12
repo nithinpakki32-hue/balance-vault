@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import struct
 
-BASE_URL = 'http://localhost:8000'
+BASE_URL = 'http://127.0.0.1:8000'
 
 def generate_totp(secret_hex: str) -> str:
     key = bytes.fromhex(secret_hex)

@@ -76,7 +76,7 @@ export const CreateAccountModal: React.FC<CreateAccountModalProps> = ({
         });
 
         if (response.success) {
-          setSuccessMsg('Account request submitted successfully! Your request is pending administrator review.');
+          setSuccessMsg('Your account request has been submitted successfully. Waiting for Admin approval.');
           setTimeout(() => {
             onSuccess();
             onClose();

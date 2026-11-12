@@ -1199,7 +1199,8 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
 
                 self._send_json(201, {
                     'success': True,
-                    'message': 'Account opening request submitted successfully. Awaiting administrator review.',
+                    'message': 'Your account request has been submitted successfully. Waiting for Admin approval.',
+                    'requestId': new_req['id'],
                     'request': new_req
                 })
                 return

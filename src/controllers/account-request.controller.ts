@@ -64,7 +64,8 @@ export class AccountRequestController {
 
       res.status(201).json({
         success: true,
-        message: 'Account opening request submitted successfully. Awaiting administrator review.',
+        message: 'Your account request has been submitted successfully. Waiting for Admin approval.',
+        requestId: request.id,
         request,
       });
     } catch (error) {

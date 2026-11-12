@@ -9,7 +9,7 @@ import struct
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-BASE_URL = 'http://localhost:8000'
+BASE_URL = 'http://127.0.0.1:8000'
 
 def generate_totp(secret_hex: str) -> str:
     key = bytes.fromhex(secret_hex)
@@ -75,7 +75,10 @@ class AccountRequestWorkflowTests(unittest.TestCase):
             self.assertEqual(resp.status, 201)
             data = json.loads(resp.read().decode())
             self.assertTrue(data['success'])
+            self.assertEqual(data['message'], 'Your account request has been submitted successfully. Waiting for Admin approval.')
+            self.assertIn('requestId', data)
             request = data['request']
+            self.assertEqual(data['requestId'], request['id'])
             self.assertEqual(request['status'], 'PENDING')
             self.assertEqual(request['userId'], self.user_id)
             self.assertEqual(request['accountName'], 'Commercial Real Estate Escrow')

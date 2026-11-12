@@ -5,7 +5,7 @@ import unittest
 import time
 import uuid
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://127.0.0.1:8000"
 
 def request(method, path, data=None, headers=None):
     url = f"{BASE_URL}{path}"
@@ -74,7 +74,7 @@ class BalanceVaultSecurityAndLedgerTestSuite(unittest.TestCase):
         self.assertTrue(data["account"]["accountNumber"].startswith("BV-CHK-"))
 
     def test_04_brute_force_account_lockout(self):
-        test_email = "alex_lockout_test@balancevault.com"
+        test_email = f"alex_lockout_{uuid.uuid4().hex[:8]}@balancevault.com"
         # Register user
         request("POST", "/api/auth/register", {
             "email": test_email,
@@ -108,7 +108,7 @@ class BalanceVaultSecurityAndLedgerTestSuite(unittest.TestCase):
         self.assertIn("Account locked", data.get("message", ""))
 
     def test_05_password_reset_flow(self):
-        test_email = "reset_user@balancevault.com"
+        test_email = f"reset_user_{uuid.uuid4().hex[:8]}@balancevault.com"
         request("POST", "/api/auth/register", {
             "email": test_email,
             "fullName": "Reset User",
