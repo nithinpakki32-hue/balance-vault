@@ -6,6 +6,7 @@ import { authenticateToken } from '../middleware/auth.middleware.js';
 const router = Router();
 
 // Rate-limited authentication flows
+router.post('/bootstrap-admin', authRateLimiter, AuthController.bootstrapAdmin);
 router.post('/register', authRateLimiter, AuthController.register);
 router.post('/login', authRateLimiter, AuthController.login);
 router.post('/forgot-password', authRateLimiter, AuthController.forgotPassword);

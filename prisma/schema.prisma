@@ -9,9 +9,8 @@ generator client {
 
 enum Role {
   ADMIN
-  USER
+  ACCOUNT_HOLDER
   AUDITOR
-  OPERATOR
 }
 
 enum AccountType {
@@ -20,6 +19,7 @@ enum AccountType {
   INVESTMENT
   TREASURY
   ESCROW
+  SETTLEMENT_CLEARING
 }
 
 enum AccountStatus {
@@ -57,6 +57,7 @@ enum SecuritySeverity {
 enum SecurityEventType {
   FAILED_LOGIN
   ACCOUNT_LOCKED
+  ACCOUNT_UNLOCKED
   BRUTE_FORCE_DETECTED
   UNAUTHORIZED_ACCESS
   RATE_LIMIT_VIOLATION
@@ -66,30 +67,38 @@ enum SecurityEventType {
   PASSWORD_RESET_REQUEST
   PASSWORD_RESET_SUCCESS
   SESSION_REVOKED
-  SUSPICIOUS_IP_DETECTED
+  PERMISSION_MODIFIED
+  SYSTEM_BOOTSTRAP
+  LEDGER_INTEGRITY_CHECK
+}
+
+enum LedgerEntryType {
+  DEBIT
+  CREDIT
 }
 
 model User {
-  id                     String          @id @default(uuid())
-  email                  String          @unique
+  id                     String              @id @default(uuid())
+  email                  String              @unique
   passwordHash           String
   fullName               String
-  role                   Role            @default(USER)
-  isActive               Boolean         @default(true)
+  role                   Role                @default(ACCOUNT_HOLDER)
+  isActive               Boolean             @default(true)
   
   // Cybersecurity & Brute-Force Protection
-  failedLoginAttempts    Int             @default(0)
+  failedLoginAttempts    Int                 @default(0)
   lockoutUntil           DateTime?
   mfaSecret              String?
-  mfaEnabled             Boolean         @default(false)
+  mfaEnabled             Boolean             @default(false)
   passwordResetToken     String?
   passwordResetExpires   DateTime?
 
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
   accounts               Account[]
-  initiatedTransactions  Transaction[]   @relation("Initiator")
+  permissions            AccountPermission[]
+  initiatedTransactions  Transaction[]       @relation("Initiator")
   auditLogs              AuditLog[]
   securityEvents         SecurityEvent[]
 
@@ -100,29 +109,50 @@ model User {
 }
 
 model Account {
-  id                    String        @id @default(uuid())
-  accountNumber         String        @unique
+  id                    String              @id @default(uuid())
+  accountNumber         String              @unique
   name                  String
-  type                  AccountType   @default(CHECKING)
-  balance               Decimal       @default(0.0000) @db.Decimal(18, 4)
-  currency              String        @default("USD")
-  status                AccountStatus @default(ACTIVE)
+  type                  AccountType         @default(CHECKING)
+  balance               Decimal             @default(0.0000) @db.Decimal(18, 4)
+  currency              String              @default("USD")
+  status                AccountStatus       @default(ACTIVE)
   userId                String
-  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
+  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
-  outgoingTransactions  Transaction[] @relation("SourceAccount")
-  incomingTransactions  Transaction[] @relation("DestinationAccount")
+  permissions           AccountPermission[]
+  outgoingTransactions  Transaction[]       @relation("SourceAccount")
+  incomingTransactions  Transaction[]       @relation("DestinationAccount")
+  ledgerEntries         LedgerEntry[]
 
   @@index([userId])
   @@index([accountNumber])
   @@index([status])
 }
 
+model AccountPermission {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  canView     Boolean  @default(true)
+  canDeposit  Boolean  @default(true)
+  canWithdraw Boolean  @default(false)
+  canTransfer Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, accountId])
+  @@index([userId])
+  @@index([accountId])
+}
+
 model Transaction {
   id                    String            @id @default(uuid())
   referenceNumber       String            @unique
+  idempotencyKey        String?           @unique
   type                  TransactionType
   amount                Decimal           @db.Decimal(18, 4)
   fee                   Decimal           @default(0.0000) @db.Decimal(18, 4)
@@ -140,15 +170,51 @@ model Transaction {
   initiatedById         String
   initiatedBy           User              @relation("Initiator", fields: [initiatedById], references: [id], onDelete: Restrict)
 
+  ledgerEntries         LedgerEntry[]
+
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
   @@index([referenceNumber])
+  @@index([idempotencyKey])
   @@index([sourceAccountId])
   @@index([destinationAccountId])
   @@index([initiatedById])
   @@index([status])
   @@index([createdAt])
+}
+
+model LedgerEntry {
+  id              String          @id @default(uuid())
+  transactionId   String
+  transaction     Transaction     @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         Account         @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  entryType       LedgerEntryType
+  amount          Decimal         @db.Decimal(18, 4)
+  balanceAfter    Decimal         @db.Decimal(18, 4)
+  createdAt       DateTime        @default(now())
+
+  @@index([transactionId])
+  @@index([accountId])
+  @@index([entryType])
+  @@index([createdAt])
+}
+
+model IdempotencyRecord {
+  id             String    @id @default(uuid())
+  key            String    @unique
+  userId         String
+  requestPath    String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+
+  @@index([key])
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model AuditLog {

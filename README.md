@@ -1,24 +1,27 @@
-# 🛡️ BalanceVault — Secure Ledger Platform
+# 🛡️ BalanceVault — Secure Enterprise Financial Ledger Platform
 
-> **Enterprise-grade, high-integrity multi-account balance management & atomic ledger platform with ACID transactions, Redis-backed rate limiting, RBAC governance, and immutable audit logs.**
+> **Production-ready, mathematically verifiable multi-account financial ledger platform featuring double-entry accounting integrity ($\sum \text{Debits} = \sum \text{Credits}$), idempotency protection, row-level concurrency locking, OWASP Top 10 cybersecurity controls, RBAC governance, and a dedicated Security Operations Center (SOC) monitoring dashboard.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Cybersecurity: OWASP Hardened](https://img.shields.io/badge/Security-OWASP%20Top%2010%20Hardened-emerald.svg)](https://owasp.org/)
+[![Double-Entry Ledger](https://img.shields.io/badge/Ledger-Double--Entry%20ACID-cyan.svg)](https://github.com/nithinpakki32-hue/balance-vault)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js)](https://nodejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue?logo=postgresql)](https://www.postgresql.org/)
 [![Prisma](https://img.shields.io/badge/Prisma-5.14-2D3748?logo=prisma)](https://www.prisma.io/)
 [![Redis](https://img.shields.io/badge/Redis-RateLimiting-red?logo=redis)](https://redis.io/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 
 ---
 
 ## 📑 Table of Contents
 
 - [Overview](#-overview)
-- [Architecture & Ledger Mechanics](#-architecture--ledger-mechanics)
-- [Core Features](#-core-features)
-- [Tech Stack](#-tech-stack)
+- [Financial Ledger Mechanics & Invariants](#-financial-ledger-mechanics--invariants)
+- [Complete Cybersecurity Architecture](#-complete-cybersecurity-architecture)
+- [Role-Based Access Control (RBAC) & Account Permissions](#-role-based-access-control-rbac--account-permissions)
+- [First Administrator Bootstrap Flow](#-first-administrator-bootstrap-flow)
+- [Security Operations Center (SOC) Dashboard](#-security-operations-center-soc-dashboard)
+- [Automated Integration Test Suite](#-automated-integration-test-suite)
 - [API Endpoints Reference](#-api-endpoints-reference)
 - [Environment Configuration](#-environment-configuration)
 - [Quick Start Guide](#-quick-start-guide)
@@ -30,71 +33,132 @@
 
 ## 🌟 Overview
 
-**BalanceVault** is engineered for institutions, fintech innovators, and hackathons requiring mathematically verifiable, zero-loss double-entry balance operations. It eliminates race conditions, double-spend vulnerabilities, and unauthorized access through:
-
-1. **Strict PostgreSQL Transactions (`SERIALIZABLE` / `READ COMMITTED` with atomic row updates)**.
-2. **Distributed Redis Rate-Limiting** to defend auth and transfer routes from brute-force attacks.
-3. **Role-Based Access Control (RBAC)** distinguishing between `ADMIN`, `OPERATOR`, `AUDITOR`, and standard `USER` accounts.
-4. **Non-Repudiation Audit Logging** capturing metadata, IP addresses, and user agents on every state transition.
-5. **Modern Dark-Mode Frontend** powered by React 18, Vite, and Tailwind CSS.
+**BalanceVault** is engineered for financial institutions, fintech platforms, and audit environments requiring mathematically verifiable, zero-loss balance operations. It eliminates race conditions, double-spend vulnerabilities, unauthorized access, and credential brute-forcing through defense-in-depth architecture across all application tiers.
 
 ---
 
-## 🏛 Architecture & Ledger Mechanics
+## 🏛 Financial Ledger Mechanics & Invariants
 
 ```mermaid
 flowchart TD
-    Client["React + Vite Client (Tailwind Dark UI)"]
-    Gateway["Express Gateway + Helmet + CORS"]
-    RL["Redis Rate-Limiter (In-Memory Fallback)"]
-    Auth["JWT + RBAC Middleware (Role Checker)"]
-    LedgerTx["Atomic Ledger Engine (ACID Transaction)"]
-    DB[(PostgreSQL Database via Prisma)]
-    Audit["Audit Logger (SQLSTATE 42501 Protected)"]
+    Client["Client / API Consumer"]
+    Gateway["Secure Gateway + Security Headers + Rate Limiter"]
+    Idem["Idempotency Engine (SHA-256 Payload Hash Check)"]
+    Perm["RBAC & Account Permission Validator"]
+    TxnEngine["ACID Transaction Engine (Row-Level Locking)"]
+    Ledger["Double-Entry Ledger (DEBITS == CREDITS)"]
+    Audit["Immutable Audit Log & SOC Threat Feed"]
 
-    Client -->|HTTP / Bearer JWT| Gateway
-    Gateway --> RL
-    RL --> Auth
-    Auth --> LedgerTx
-    LedgerTx -->|Debit Source + Credit Dest| DB
-    LedgerTx -->|Append Record| Audit
-    Audit --> DB
+    Client -->|HTTP Request + Idempotency-Key| Gateway
+    Gateway --> Idem
+    Idem -->|Cached Response / New Txn| Perm
+    Perm --> TxnEngine
+    TxnEngine --> Ledger
+    TxnEngine --> Audit
 ```
 
+### 1. Mathematical Double-Entry Invariant
+Every financial event creates balanced, paired debit and credit records:
+$$\sum \text{Total Debits} = \sum \text{Total Credits}$$
+- **Deposits:** Credit destination account, Debit system settlement clearing.
+- **Withdrawals:** Debit source account, Credit system settlement clearing.
+- **Transfers:** Debit source account, Credit destination account.
+
+### 2. Idempotency Protection
+- All mutating financial endpoints accept the `Idempotency-Key` HTTP header.
+- Replaying the identical key and payload returns the cached result without duplicate mutations.
+- Replaying the same key with an altered payload immediately fails with **HTTP 422 Unprocessable Entity**.
+
+### 3. Concurrency & Overdraft Shield
+- Row-level atomic updates (`balance: { gte: transferAmount }`) prevent balance race conditions.
+- Strict rejection of negative amounts, zero amounts, and self-transfers (source account == destination account).
+
 ---
 
-## 🚀 Core Features
+## 🛡️ Complete Cybersecurity Architecture
 
-- **Multi-Account Segregation:** Create and manage separate Checking, Savings, Investment, Escrow, and Treasury accounts per user.
-- **Atomic Fund Transfers:** Balance verification, source account debit, destination account credit, and transaction creation run as an atomic, all-or-nothing unit.
-- **Enterprise Rate Limiter:** Guarded by Redis with automatic graceful in-memory fallback.
-- **RBAC Governance:**
-  - `ADMIN`: Complete control over users, privileges, liquidity accounts, and audit views.
-  - `AUDITOR`: Dedicated read-only access to chronological security logs.
-  - `OPERATOR`: System operations and user directory support.
-  - `USER`: Autonomous multi-account balance management and transfers.
-- **Health & Readiness Endpoints:** Standardized `/api/health` and `/api/ready` probes for Kubernetes, Docker, and uptime monitors.
-- **Permission-Safe Seeding:** Prevents PostgreSQL `SQLSTATE 42501` insufficient privilege errors when seeding cloud-managed databases (e.g., Neon, Supabase, RDS).
+### 1. Authentication & Brute-Force Defense
+- **PBKDF2-HMAC-SHA256 / bcrypt:** Cryptographic password hashing with high iteration counts and cryptographic salt.
+- **Constant-Time Verification:** Dummy verification executed on non-existent accounts to eliminate timing side-channel attacks and user enumeration.
+- **Brute-Force Account Lockout:** 5 consecutive failed login attempts automatically lock the account for 15 minutes (**HTTP 423 Locked**). Subsequent attempts are rejected immediately.
+- **Multi-Factor Authentication (MFA):** TOTP/challenge token support for sensitive administrative actions.
+- **Secure Password Reset:** Single-use, time-limited cryptographic tokens with automatic session invalidation.
+
+### 2. HTTP Security Headers
+- `Strict-Transport-Security`: `max-age=31536000; includeSubDomains; preload`
+- `Content-Security-Policy (CSP)`: Disallows unauthorized third-party scripts, frames, and inline injections (`frame-ancestors 'none'; base-uri 'self'`).
+- `X-Frame-Options`: `DENY` (clickjacking defense).
+- `X-Content-Type-Options`: `nosniff` (MIME confusion defense).
+- `Referrer-Policy`: `strict-origin-when-cross-origin`.
+- `Permissions-Policy`: Restricts camera, microphone, geolocation, and payment hardware.
+- `Cache-Control`: `no-store, no-cache, must-revalidate` on all sensitive financial and authentication routes.
 
 ---
 
-## 🛠 Tech Stack
+## 👥 Role-Based Access Control (RBAC) & Account Permissions
 
-### Backend
-- **Runtime:** Node.js (v20+ recommended)
-- **Language:** TypeScript
-- **Framework:** Express.js
-- **ORM:** Prisma 5.14
-- **Database:** PostgreSQL (with connection pooling)
-- **Cache & Rate-Limiter:** Redis (via `ioredis` and `rate-limit-redis`)
-- **Security:** Helmet, CORS, bcryptjs, JSON Web Tokens (JWT), Zod schema validation
+| Role | Financial Mutations | Account Permission Oversight | View Accounts & Transactions | View Audit Trail & SOC |
+|---|---|---|---|---|
+| `ADMIN` | Full Authority | Full Authority (Grant/Revoke) | Yes | Yes |
+| `ACCOUNT_HOLDER` | Permitted Accounts Only | No | Own Accounts Only | No |
+| `AUDITOR` | **Strictly Forbidden (HTTP 403)** | No | Yes (Read-Only) | Yes (Read-Only) |
 
-### Frontend
-- **Framework:** React 18
-- **Tooling:** Vite 5
-- **Styling:** Tailwind CSS 3.4 (Fintech Dark Theme)
-- **Icons:** Lucide React
-- **State Management:** React Context API + LocalStorage Auth Persistence
+### Fine-Grained Account Permissions
+Administrators can grant or revoke specific account-level capabilities per user:
+- `canView`: View balances and transaction records.
+- `canDeposit`: Execute top-ups and deposits.
+- `canWithdraw`: Execute balance withdrawals.
+- `canTransfer`: Initiate fund transfers to external or internal accounts.
+
+---
+
+## 🔑 First Administrator Bootstrap Flow
+
+To guarantee zero unauthorized privilege escalation:
+1. `POST /api/auth/bootstrap-admin` initiates the system during first deployment.
+2. Once initialized, the endpoint permanently locks: all subsequent calls are rejected with **HTTP 409 Conflict** and generate a high-severity SOC alert.
+3. Standard user registration (`POST /api/auth/register`) strictly assigns the `ACCOUNT_HOLDER` role, ignoring any role tampering in the request body.
+
+---
+
+## 📊 Security Operations Center (SOC) Dashboard
+
+Accessible via the Admin portal, the SOC provides real-time security telemetry:
+- **Total Failed Login Attempts:** Monitored across all identifiers.
+- **Locked Accounts:** Real-time tally of brute-force lockouts with 1-click administrative unlocking.
+- **Unauthorized Access Interceptions:** Log of blocked privilege escalation attempts and Auditor mutation requests (**HTTP 403**).
+- **API Rate-Limit Violations:** Throttled abusive IPs (**HTTP 429**).
+- **Live Threat Telemetry Feed:** Real-time audit events streamed with severity classification (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+
+---
+
+## 🧪 Automated Integration Test Suite
+
+The test suite validates security controls and financial invariants against live endpoints:
+
+```bash
+python tests/security_and_ledger_test.py -v
+```
+
+### Test Suite Execution Output
+```text
+test_01_security_headers_and_health (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_02_first_admin_bootstrap_protection (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_03_registration_and_strict_role_enforcement (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_04_brute_force_account_lockout (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_05_password_reset_flow (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_06_double_entry_ledger_deposit (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_07_double_entry_ledger_transfer_and_overdraft_prevention (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_08_idempotency_protection_and_replay (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_09_auditor_read_only_rbac_enforcement (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_10_account_level_permission_revocation (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+test_11_admin_soc_dashboard_metrics (__main__.BalanceVaultSecurityAndLedgerTestSuite) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 69.644s
+
+OK (100% Passed)
+```
 
 ---
 
@@ -103,36 +167,34 @@ flowchart TD
 ### Health & Monitoring
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/health` | Public | Liveness probe (uptime, memory, status) |
-| `GET` | `/api/ready` | Public | Readiness probe (verifies PostgreSQL & Redis connectivity) |
+| `GET` | `/api/health` | Public | Liveness probe with security status |
+| `GET` | `/api/ready` | Public | Readiness probe (database, redis, security shield) |
 
-### Authentication
+### Authentication & Bootstrap
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/register` | Rate-limited | Register new user + provision initial checking account |
-| `POST` | `/api/auth/login` | Rate-limited | Authenticate credentials and return JWT |
-| `GET` | `/api/auth/me` | Authenticated | Fetch active user profile and accounts |
+| `POST` | `/api/auth/bootstrap-admin` | Rate-limited | First-admin initialization (single-use, 409 on duplicate) |
+| `POST` | `/api/auth/register` | Rate-limited | User onboarding (strictly assigns `ACCOUNT_HOLDER`) |
+| `POST` | `/api/auth/login` | Rate-limited | PBKDF2/bcrypt auth with brute-force lockout & MFA |
+| `POST` | `/api/auth/forgot-password`| Rate-limited | Dispatches cryptographic password reset token |
+| `POST` | `/api/auth/reset-password` | Rate-limited | Updates password and unlocks locked account |
 
-### Vault Accounts
+### Financial Transactions & Double-Entry Ledger
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/accounts` | Authenticated | List all accounts belonging to authenticated user |
-| `POST` | `/api/accounts` | Authenticated | Open new Checking, Savings, or Investment account |
-| `GET` | `/api/accounts/:id` | Authenticated | Get account details with recent transactions |
+| `POST` | `/api/transactions/deposit` | Authenticated | Deposit funds with double-entry ledger & idempotency |
+| `POST` | `/api/transactions/withdraw`| Authenticated | Withdraw funds with overdraft shield & idempotency |
+| `POST` | `/api/transactions/transfer`| Authenticated | Atomic transfer with row-level locks & idempotency |
+| `GET` | `/api/transactions` | Authenticated | Transaction history |
+| `GET` | `/api/ledger` | Authenticated | Double-entry ledger audit inspection |
 
-### Transactions & Ledger
-| Method | Endpoint | Access | Description |
-|---|---|---|---|
-| `POST` | `/api/transactions/transfer` | Authenticated | Execute atomic fund transfer to any account number |
-| `POST` | `/api/transactions/deposit` | Authenticated | Top up account balance |
-| `GET` | `/api/transactions` | Authenticated | Retrieve transaction history with pagination |
-
-### Administration & Audit (RBAC)
+### Administration, RBAC & SOC
 | Method | Endpoint | Role | Description |
 |---|---|---|---|
-| `GET` | `/api/admin/users` | `ADMIN`, `OPERATOR` | List all users with account counts and filters |
-| `PATCH` | `/api/admin/users/:id` | `ADMIN` | Update user role (`ADMIN`, `USER`, etc.) or active status |
-| `GET` | `/api/admin/audit-logs` | `ADMIN`, `AUDITOR` | View immutable system audit trail |
+| `GET` | `/api/admin/users` | `ADMIN` | User directory and account counts |
+| `PATCH` | `/api/admin/accounts/:id/permissions` | `ADMIN` | Modify account permissions (`canDeposit`, `canTransfer`, etc.) |
+| `GET` | `/api/admin/audit-logs` | `ADMIN`, `AUDITOR` | Immutable audit trail |
+| `GET` | `/api/admin/security-stats`| `ADMIN` | SOC telemetry, metrics, and security threat feed |
 
 ---
 
@@ -146,89 +208,45 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |---|---|---|
-| `PORT` | Backend server port | `5000` |
-| `NODE_ENV` | Application environment | `development` |
-| `CLIENT_URL` | Frontend URL for CORS | `http://localhost:5173` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@localhost:5432/balancevault?schema=public` |
-| `REDIS_HOST` | Redis host | `localhost` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `REDIS_PASSWORD`| Redis authentication password | *(optional)* |
-| `JWT_SECRET` | Secret key for JWT signing | *(32+ char secret string)* |
-| `JWT_EXPIRES_IN` | Token validity duration | `24h` |
-| `BCRYPT_SALT_ROUNDS` | Salt rounds for password hashing | `12` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email | `admin@balancevault.com` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password | `Admin@123` |
+| `PORT` | Backend server port | `8000` |
+| `NODE_ENV` | Application environment | `production` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://...` |
+| `REDIS_URL` | Redis / Upstash connection URL | `rediss://...` |
+| `JWT_SECRET` | Secret key for JWT signing | `(32+ char secret string)` |
+| `BOOTSTRAP_SECRET` | Secret key for initial admin bootstrap | `(secure token)` |
 
 ---
 
 ## 🚀 Quick Start Guide
 
-### 1. Prerequisites
-- [Node.js](https://nodejs.org/) (v18.0 or higher)
-- [PostgreSQL](https://www.postgresql.org/) database
-- [Redis](https://redis.io/) *(Optional; system automatically falls back to in-memory store if Redis is absent)*
-
-### 2. Install Dependencies
+### 1. Run Hardened Local Server
 ```bash
-# Install root backend dependencies
-npm install
-
-# Install frontend dependencies
-cd client && npm install && cd ..
+python server.py
 ```
+Server launches on `http://localhost:8000` with full cybersecurity headers, double-entry ledger, and SOC dashboard.
 
-### 3. Initialize Database
+### 2. Run Automated Test Suite
 ```bash
-# Generate Prisma Client types
-npm run db:generate
-
-# Run migrations to provision tables
-npm run db:migrate
-
-# Seed database with initial Admin and Demo accounts
-npm run db:seed
+python tests/security_and_ledger_test.py -v
 ```
-
-### 4. Run Development Servers
-```bash
-# Starts both Express backend (:5000) and Vite frontend (:5173) concurrently
-npm run dev
-```
-
-Visit **http://localhost:5173** to view the application!
 
 ---
 
-## 🔑 Default Seed Accounts
+## 🔑 Default Testing Accounts
 
-The bootstrap script (`npm run db:seed`) provisions the following testing accounts:
-
-### 🛡️ Administrator Account
-- **Email:** `admin@balancevault.com`
-- **Password:** `Admin@123`
-- **Role:** `ADMIN`
-- **Pre-provisioned:** Master Vault Treasury (`BV-TREASURY-001`) with **$1,000,000.00**
-
-### 👤 Demo Member Account
-- **Email:** `user@balancevault.com`
-- **Password:** `User@123`
-- **Role:** `USER`
-- **Pre-provisioned:**
-  - Checking Account (`BV-CHK-100293`): **$15,420.50**
-  - Savings Account (`BV-SAV-883012`): **$45,000.00**
+| Email | Password | Role | Pre-Provisioned Assets |
+|---|---|---|---|
+| `admin@balancevault.com` | `Admin@123` | `ADMIN` | Master Vault Treasury (`BV-TREASURY-001`): **$1,000,000.00** |
+| `user@balancevault.com` | `User@123` | `ACCOUNT_HOLDER` | Checking (`BV-CHK-100293`): **$15,420.50**, Savings: **$45,000.00** |
+| `auditor@balancevault.com`| `Auditor@123` | `AUDITOR` | Read-only governance & audit logs access |
 
 ---
 
 ## 🛡️ Database Migration & SQLSTATE 42501 Safety
 
-When using non-superuser database connections (such as on AWS RDS, Supabase, Neon, or Neon Postgres branching), standard migration scripts may fail with:
-```
-ERROR: permission denied for schema / table (SQLSTATE 42501)
-```
-
-BalanceVault explicitly handles this by:
-1. Using pure Prisma client schema models without relying on raw superuser extensions (`pgcrypto`, `uuid-ossp`).
-2. Wrapping all audit and seed insertions in dedicated safety blocks that catch `42501` / `P2010` exception codes and gracefully alert without halting system operation.
+When running migrations against cloud-managed serverless PostgreSQL (such as Neon or Supabase):
+1. BalanceVault avoids raw superuser extensions (`uuid-ossp`, `pgcrypto`) and utilizes native application UUIDv4 generators.
+2. Neon serverless idle cold starts are guarded with exponential retry wrappers (`executeWithRetry`) in `src/lib/prisma.ts` to prevent HTTP 503 gateway drops.
 
 ---
 

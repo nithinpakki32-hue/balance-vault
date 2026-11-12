@@ -257,4 +257,64 @@ export class AdminController {
       next(error);
     }
   }
+
+  /**
+   * Update Account-Level Permissions
+   */
+  static async updateAccountPermissions(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id: accountId } = req.params;
+      const { userId, canView, canDeposit, canWithdraw, canTransfer } = req.body;
+
+      if (!userId) {
+        res.status(400).json({ success: false, message: 'userId is required' });
+        return;
+      }
+
+      const permission = await prisma.accountPermission.upsert({
+        where: {
+          userId_accountId: {
+            userId,
+            accountId,
+          },
+        },
+        update: {
+          ...(typeof canView === 'boolean' && { canView }),
+          ...(typeof canDeposit === 'boolean' && { canDeposit }),
+          ...(typeof canWithdraw === 'boolean' && { canWithdraw }),
+          ...(typeof canTransfer === 'boolean' && { canTransfer }),
+        },
+        create: {
+          userId,
+          accountId,
+          canView: canView ?? true,
+          canDeposit: canDeposit ?? false,
+          canWithdraw: canWithdraw ?? false,
+          canTransfer: canTransfer ?? false,
+        },
+      });
+
+      await AuditService.log({
+        action: 'ACCOUNT_PERMISSION_UPDATED',
+        resource: 'ACCOUNT_PERMISSION',
+        resourceId: permission.id,
+        userId: req.user!.id,
+        ipAddress: req.ip || req.socket.remoteAddress,
+        userAgent: req.get('user-agent'),
+        metadata: {
+          targetUserId: userId,
+          accountId,
+          permission,
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: 'Account permissions updated successfully.',
+        permission,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
