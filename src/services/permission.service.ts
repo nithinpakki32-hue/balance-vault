@@ -3,7 +3,8 @@ import { prisma } from '../lib/prisma.js';
 
 export class PermissionService {
   /**
-   * Verify if a user is permitted to perform a financial action on an account
+   * Verify if a user is permitted to perform a financial action on an account.
+   * Default-Deny: Access is denied unless an active, explicit authorization allows it.
    */
   static async checkAccountPermission(
     userId: string,
@@ -27,7 +28,7 @@ export class PermissionService {
       return { allowed: true };
     }
 
-    // 3. ACCOUNT_HOLDER: Check account ownership & permissions
+    // 3. ACCOUNT_HOLDER: Look up account and specific permissions
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       include: {
@@ -41,27 +42,42 @@ export class PermissionService {
       return { allowed: false, reason: 'Target account not found.' };
     }
 
-    const isOwner = account.userId === userId;
+    // Deactivated, frozen, or closed accounts cannot process transactions
+    if (account.status !== 'ACTIVE' && action !== 'view') {
+      return {
+        allowed: false,
+        reason: `Account status is ${account.status.toLowerCase()} and cannot process financial mutations.`,
+      };
+    }
+
     const explicitPerm = account.permissions[0];
+    if (!explicitPerm) {
+      // Default Deny: If no permission record exists for this user on this account, deny access.
+      return { allowed: false, reason: 'Permission denied: no account privileges granted.' };
+    }
 
     if (action === 'view') {
-      const allowed = isOwner || (explicitPerm && explicitPerm.canView);
-      return { allowed: !!allowed, reason: allowed ? undefined : 'Permission denied: cannot view this account.' };
+      return explicitPerm.canView
+        ? { allowed: true }
+        : { allowed: false, reason: 'Permission denied: cannot view this account.' };
     }
 
     if (action === 'deposit') {
-      const allowed = isOwner || (explicitPerm && explicitPerm.canDeposit);
-      return { allowed: !!allowed, reason: allowed ? undefined : 'Permission denied: deposit privilege not granted on this account.' };
+      return explicitPerm.canDeposit
+        ? { allowed: true }
+        : { allowed: false, reason: 'Permission denied: deposit privilege not granted on this account.' };
     }
 
     if (action === 'withdraw') {
-      const allowed = isOwner || (explicitPerm && explicitPerm.canWithdraw);
-      return { allowed: !!allowed, reason: allowed ? undefined : 'Permission denied: withdrawal privilege not granted on this account.' };
+      return explicitPerm.canWithdraw
+        ? { allowed: true }
+        : { allowed: false, reason: 'Permission denied: withdrawal privilege not granted on this account.' };
     }
 
     if (action === 'transfer') {
-      const allowed = isOwner || (explicitPerm && explicitPerm.canTransfer);
-      return { allowed: !!allowed, reason: allowed ? undefined : 'Permission denied: transfer privilege not granted on this account.' };
+      return explicitPerm.canTransfer
+        ? { allowed: true }
+        : { allowed: false, reason: 'Permission denied: transfer privilege not granted on this account.' };
     }
 
     return { allowed: false, reason: 'Unauthorized operation.' };

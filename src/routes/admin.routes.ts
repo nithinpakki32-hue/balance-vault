@@ -9,8 +9,8 @@ const router = Router();
 // Require valid authentication for all admin routes
 router.use(authenticateToken);
 
-// User Management (Admin & Operator access)
-router.get('/users', authorizeRoles(Role.ADMIN, Role.OPERATOR), AdminController.listUsers);
+// User Management (Admin access only)
+router.get('/users', authorizeRoles(Role.ADMIN), AdminController.listUsers);
 router.patch('/users/:id', authorizeRoles(Role.ADMIN), AdminController.updateUser);
 
 // Audit Log Viewer (Admin & Auditor access)

@@ -28,13 +28,16 @@ const withdrawSchema = z.object({
 });
 
 export class TransactionController {
+  /**
+   * Atomic Fund Transfer with Double-Entry Ledger & Atomic Idempotency
+   */
   static async transfer(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     const idempotencyKey = req.header('Idempotency-Key');
 
     try {
       const data = transferSchema.parse(req.body);
 
-      // 1. Idempotency Check
+      // 1. Pre-flight Idempotency Check (Fast-path cached return)
       if (idempotencyKey) {
         const idemCheck = await IdempotencyService.checkKey(
           idempotencyKey,
@@ -51,7 +54,7 @@ export class TransactionController {
         if (idemCheck.status === 'MISMATCH') {
           res.status(422).json({
             success: false,
-            message: 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
+            message: idemCheck.reason || 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
           });
           return;
         }
@@ -73,9 +76,26 @@ export class TransactionController {
       const referenceNumber = `TXN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
       const transferAmount = new Prisma.Decimal(data.amount);
 
-      // 3. Atomic Database Transaction with Row-Level Isolation
+      // 3. Atomic Database Transaction with Serializable Isolation
       const result = await prisma.$transaction(
         async (tx) => {
+          // In-transaction Idempotency Re-check to eliminate concurrent race conditions
+          if (idempotencyKey) {
+            const txIdemCheck = await IdempotencyService.checkKeyWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data
+            );
+            if (txIdemCheck.status === 'CACHED' && txIdemCheck.cachedResponse) {
+              return { isCached: true, response: txIdemCheck.cachedResponse };
+            }
+            if (txIdemCheck.status === 'MISMATCH') {
+              throw new Error('IDEMPOTENCY_PAYLOAD_MISMATCH');
+            }
+          }
+
           // Fetch source account
           const sourceAccount = await tx.account.findUnique({
             where: { id: data.sourceAccountId },
@@ -107,7 +127,6 @@ export class TransactionController {
           }
 
           // Concurrency & Overdraft Guard: Atomic Conditional Debit
-          // Enforces balance >= transferAmount at the database storage engine layer
           const debitResult = await tx.account.updateMany({
             where: {
               id: sourceAccount.id,
@@ -164,22 +183,42 @@ export class TransactionController {
             destinationAccount.id
           );
 
-          return {
+          const responsePayload = {
+            success: true,
+            message: 'Fund transfer executed and verified across double-entry ledger.',
             transaction,
-            sourceAccount: updatedSource,
-            destinationAccount: updatedDest,
+            remainingBalance: updatedSource.balance,
           };
+
+          // 5. Atomic Idempotency Outcome Recording inside SAME transaction
+          if (idempotencyKey) {
+            await IdempotencyService.recordResponseWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data,
+              200,
+              responsePayload
+            );
+          }
+
+          return { isCached: false, response: { status: 200, body: responsePayload } };
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         }
       );
 
-      // Audit Log Success
+      if (result.isCached) {
+        res.status(result.response.status).json(result.response.body);
+        return;
+      }
+
       await AuditService.log({
         action: 'TRANSFER_COMPLETED',
         resource: 'TRANSACTION',
-        resourceId: result.transaction.id,
+        resourceId: result.response.body.transaction?.id,
         userId: req.user!.id,
         ipAddress: req.ip || req.socket.remoteAddress,
         userAgent: req.get('user-agent'),
@@ -193,27 +232,16 @@ export class TransactionController {
         },
       });
 
-      const responseBody = {
-        success: true,
-        message: 'Fund transfer executed and verified across double-entry ledger.',
-        transaction: result.transaction,
-        remainingBalance: result.sourceAccount.balance,
-      };
-
-      // Record Idempotency Outcome
-      if (idempotencyKey) {
-        await IdempotencyService.recordResponse(
-          idempotencyKey,
-          req.user!.id,
-          req.originalUrl,
-          data,
-          200,
-          responseBody
-        );
+      res.status(result.response.status).json(result.response.body);
+    } catch (error: any) {
+      if (error.message === 'IDEMPOTENCY_PAYLOAD_MISMATCH') {
+        res.status(422).json({
+          success: false,
+          message: 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
+        });
+        return;
       }
 
-      res.status(200).json(responseBody);
-    } catch (error: any) {
       await AuditService.log({
         action: 'TRANSFER_FAILED',
         resource: 'TRANSACTION',
@@ -230,13 +258,16 @@ export class TransactionController {
     }
   }
 
+  /**
+   * Liquidity Deposit with Double-Entry Ledger & Atomic Idempotency
+   */
   static async deposit(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     const idempotencyKey = req.header('Idempotency-Key');
 
     try {
       const data = depositSchema.parse(req.body);
 
-      // 1. Idempotency Check
+      // Pre-flight Idempotency Check
       if (idempotencyKey) {
         const idemCheck = await IdempotencyService.checkKey(
           idempotencyKey,
@@ -244,20 +275,22 @@ export class TransactionController {
           req.originalUrl,
           data
         );
+
         if (idemCheck.status === 'CACHED' && idemCheck.cachedResponse) {
           res.status(idemCheck.cachedResponse.status).json(idemCheck.cachedResponse.body);
           return;
         }
+
         if (idemCheck.status === 'MISMATCH') {
           res.status(422).json({
             success: false,
-            message: 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched payload.',
+            message: idemCheck.reason || 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
           });
           return;
         }
       }
 
-      // 2. Permission Check
+      // Permission Check
       const perm = await PermissionService.checkAccountPermission(
         req.user!.id,
         req.user!.role,
@@ -275,12 +308,32 @@ export class TransactionController {
 
       const result = await prisma.$transaction(
         async (tx) => {
-          const account = await tx.account.findUniqueOrThrow({
+          if (idempotencyKey) {
+            const txIdemCheck = await IdempotencyService.checkKeyWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data
+            );
+            if (txIdemCheck.status === 'CACHED' && txIdemCheck.cachedResponse) {
+              return { isCached: true, response: txIdemCheck.cachedResponse };
+            }
+            if (txIdemCheck.status === 'MISMATCH') {
+              throw new Error('IDEMPOTENCY_PAYLOAD_MISMATCH');
+            }
+          }
+
+          const account = await tx.account.findUnique({
             where: { id: data.accountId },
           });
 
+          if (!account) {
+            throw new Error('Target account not found.');
+          }
+
           if (account.status !== AccountStatus.ACTIVE) {
-            throw new Error('Account is not active to accept deposits.');
+            throw new Error(`Target account is ${account.status.toLowerCase()} and cannot accept deposits.`);
           }
 
           const updatedAccount = await tx.account.update({
@@ -297,13 +350,13 @@ export class TransactionController {
               type: TransactionType.DEPOSIT,
               amount: depositAmount,
               status: TransactionStatus.COMPLETED,
-              description: data.description || 'Verified Cash Deposit',
+              description: data.description || 'Account balance deposit',
               destinationAccountId: account.id,
               initiatedById: req.user!.id,
             },
           });
 
-          // Post double-entry ledger record
+          // Double-Entry Ledger: DEBIT Clearing Pool, CREDIT Customer Account
           await LedgerService.postDoubleEntry(
             tx,
             transaction.id,
@@ -313,31 +366,67 @@ export class TransactionController {
             account.id
           );
 
-          return { transaction, updatedAccount };
+          const responsePayload = {
+            success: true,
+            message: 'Deposit completed and verified on double-entry ledger.',
+            transaction,
+            newBalance: updatedAccount.balance,
+          };
+
+          if (idempotencyKey) {
+            await IdempotencyService.recordResponseWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data,
+              200,
+              responsePayload
+            );
+          }
+
+          return { isCached: false, response: { status: 200, body: responsePayload } };
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        }
       );
 
-      const responseBody = {
-        success: true,
-        message: 'Deposit credited successfully.',
-        transaction: result.transaction,
-        newBalance: result.updatedAccount.balance,
-      };
-
-      if (idempotencyKey) {
-        await IdempotencyService.recordResponse(
-          idempotencyKey,
-          req.user!.id,
-          req.originalUrl,
-          data,
-          200,
-          responseBody
-        );
+      if (result.isCached) {
+        res.status(result.response.status).json(result.response.body);
+        return;
       }
 
-      res.status(200).json(responseBody);
+      await AuditService.log({
+        action: 'DEPOSIT_COMPLETED',
+        resource: 'TRANSACTION',
+        resourceId: result.response.body.transaction?.id,
+        userId: req.user!.id,
+        ipAddress: req.ip || req.socket.remoteAddress,
+        userAgent: req.get('user-agent'),
+        status: AuditStatus.SUCCESS,
+        metadata: { referenceNumber, amount: data.amount, accountId: data.accountId, idempotencyKey },
+      });
+
+      res.status(result.response.status).json(result.response.body);
     } catch (error: any) {
+      if (error.message === 'IDEMPOTENCY_PAYLOAD_MISMATCH') {
+        res.status(422).json({
+          success: false,
+          message: 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
+        });
+        return;
+      }
+
+      await AuditService.log({
+        action: 'DEPOSIT_FAILED',
+        resource: 'TRANSACTION',
+        userId: req.user?.id,
+        ipAddress: req.ip || req.socket.remoteAddress,
+        status: AuditStatus.FAILURE,
+        metadata: { error: error.message, idempotencyKey },
+      });
+
       res.status(400).json({
         success: false,
         message: error.message || 'Deposit failed.',
@@ -345,12 +434,16 @@ export class TransactionController {
     }
   }
 
+  /**
+   * Balance Withdrawal with Overdraft Shield, Double-Entry Ledger & Atomic Idempotency
+   */
   static async withdraw(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     const idempotencyKey = req.header('Idempotency-Key');
 
     try {
       const data = withdrawSchema.parse(req.body);
 
+      // Pre-flight Idempotency Check
       if (idempotencyKey) {
         const idemCheck = await IdempotencyService.checkKey(
           idempotencyKey,
@@ -358,13 +451,22 @@ export class TransactionController {
           req.originalUrl,
           data
         );
+
         if (idemCheck.status === 'CACHED' && idemCheck.cachedResponse) {
           res.status(idemCheck.cachedResponse.status).json(idemCheck.cachedResponse.body);
           return;
         }
+
+        if (idemCheck.status === 'MISMATCH') {
+          res.status(422).json({
+            success: false,
+            message: idemCheck.reason || 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
+          });
+          return;
+        }
       }
 
-      // Permission Check
+      // Permission Check: Must have canWithdraw permission
       const perm = await PermissionService.checkAccountPermission(
         req.user!.id,
         req.user!.role,
@@ -382,15 +484,35 @@ export class TransactionController {
 
       const result = await prisma.$transaction(
         async (tx) => {
-          const account = await tx.account.findUniqueOrThrow({
+          if (idempotencyKey) {
+            const txIdemCheck = await IdempotencyService.checkKeyWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data
+            );
+            if (txIdemCheck.status === 'CACHED' && txIdemCheck.cachedResponse) {
+              return { isCached: true, response: txIdemCheck.cachedResponse };
+            }
+            if (txIdemCheck.status === 'MISMATCH') {
+              throw new Error('IDEMPOTENCY_PAYLOAD_MISMATCH');
+            }
+          }
+
+          const account = await tx.account.findUnique({
             where: { id: data.accountId },
           });
 
-          if (account.status !== AccountStatus.ACTIVE) {
-            throw new Error('Account is not active for withdrawals.');
+          if (!account) {
+            throw new Error('Target account not found.');
           }
 
-          // Atomic conditional update prevents concurrent overspending
+          if (account.status !== AccountStatus.ACTIVE) {
+            throw new Error(`Account status is ${account.status.toLowerCase()} and cannot process withdrawals.`);
+          }
+
+          // Atomic conditional debit to prevent overdraft race conditions
           const debitResult = await tx.account.updateMany({
             where: {
               id: account.id,
@@ -402,7 +524,7 @@ export class TransactionController {
           });
 
           if (debitResult.count === 0) {
-            throw new Error('Insufficient funds available for withdrawal.');
+            throw new Error(`Insufficient funds. Withdrawal amount exceeds current balance.`);
           }
 
           const updatedAccount = await tx.account.findUniqueOrThrow({
@@ -416,13 +538,13 @@ export class TransactionController {
               type: TransactionType.WITHDRAWAL,
               amount: withdrawAmount,
               status: TransactionStatus.COMPLETED,
-              description: data.description || 'Account Withdrawal',
+              description: data.description || 'Account balance withdrawal',
               sourceAccountId: account.id,
               initiatedById: req.user!.id,
             },
           });
 
-          // Post double-entry ledger record
+          // Double-Entry Ledger: DEBIT Customer Account, CREDIT Clearing Pool
           await LedgerService.postDoubleEntry(
             tx,
             transaction.id,
@@ -432,31 +554,67 @@ export class TransactionController {
             null
           );
 
-          return { transaction, updatedAccount };
+          const responsePayload = {
+            success: true,
+            message: 'Withdrawal executed and verified on double-entry ledger.',
+            transaction,
+            remainingBalance: updatedAccount.balance,
+          };
+
+          if (idempotencyKey) {
+            await IdempotencyService.recordResponseWithClient(
+              tx,
+              idempotencyKey,
+              req.user!.id,
+              req.originalUrl,
+              data,
+              200,
+              responsePayload
+            );
+          }
+
+          return { isCached: false, response: { status: 200, body: responsePayload } };
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        }
       );
 
-      const responseBody = {
-        success: true,
-        message: 'Withdrawal processed successfully.',
-        transaction: result.transaction,
-        remainingBalance: result.updatedAccount.balance,
-      };
-
-      if (idempotencyKey) {
-        await IdempotencyService.recordResponse(
-          idempotencyKey,
-          req.user!.id,
-          req.originalUrl,
-          data,
-          200,
-          responseBody
-        );
+      if (result.isCached) {
+        res.status(result.response.status).json(result.response.body);
+        return;
       }
 
-      res.status(200).json(responseBody);
+      await AuditService.log({
+        action: 'WITHDRAWAL_COMPLETED',
+        resource: 'TRANSACTION',
+        resourceId: result.response.body.transaction?.id,
+        userId: req.user!.id,
+        ipAddress: req.ip || req.socket.remoteAddress,
+        userAgent: req.get('user-agent'),
+        status: AuditStatus.SUCCESS,
+        metadata: { referenceNumber, amount: data.amount, accountId: data.accountId, idempotencyKey },
+      });
+
+      res.status(result.response.status).json(result.response.body);
     } catch (error: any) {
+      if (error.message === 'IDEMPOTENCY_PAYLOAD_MISMATCH') {
+        res.status(422).json({
+          success: false,
+          message: 'Unprocessable Entity: Idempotency-Key reuse detected with mismatched request payload.',
+        });
+        return;
+      }
+
+      await AuditService.log({
+        action: 'WITHDRAWAL_FAILED',
+        resource: 'TRANSACTION',
+        userId: req.user?.id,
+        ipAddress: req.ip || req.socket.remoteAddress,
+        status: AuditStatus.FAILURE,
+        metadata: { error: error.message, idempotencyKey },
+      });
+
       res.status(400).json({
         success: false,
         message: error.message || 'Withdrawal failed.',
@@ -466,20 +624,21 @@ export class TransactionController {
 
   static async listTransactions(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { limit = '20', page = '1' } = req.query;
+      const { limit = '20', page = '1', accountId } = req.query;
       const take = Math.min(parseInt(limit as string, 10) || 20, 100);
       const skip = (Math.max(parseInt(page as string, 10) || 1, 1) - 1) * take;
 
-      const whereClause =
-        req.user!.role === 'ADMIN' || req.user!.role === 'AUDITOR'
-          ? {}
-          : {
-              OR: [
-                { initiatedById: req.user!.id },
-                { sourceAccount: { userId: req.user!.id } },
-                { destinationAccount: { userId: req.user!.id } },
-              ],
-            };
+      const whereClause: any = {};
+      if (accountId && typeof accountId === 'string') {
+        whereClause.OR = [{ sourceAccountId: accountId }, { destinationAccountId: accountId }];
+      } else if (req.user!.role !== 'ADMIN' && req.user!.role !== 'AUDITOR') {
+        const userAccounts = await prisma.account.findMany({
+          where: { userId: req.user!.id },
+          select: { id: true },
+        });
+        const accountIds = userAccounts.map((a) => a.id);
+        whereClause.OR = [{ sourceAccountId: { in: accountIds } }, { destinationAccountId: { in: accountIds } }];
+      }
 
       const [transactions, total] = await Promise.all([
         prisma.transaction.findMany({
@@ -488,8 +647,8 @@ export class TransactionController {
           skip,
           orderBy: { createdAt: 'desc' },
           include: {
-            sourceAccount: { select: { accountNumber: true, name: true } },
-            destinationAccount: { select: { accountNumber: true, name: true } },
+            sourceAccount: { select: { id: true, accountNumber: true, name: true } },
+            destinationAccount: { select: { id: true, accountNumber: true, name: true } },
             ledgerEntries: true,
           },
         }),

@@ -1,39 +1,96 @@
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 dotenv.config();
 
-export const config = {
-  port: parseInt(process.env.PORT || '5000', 10),
-  nodeEnv: process.env.NODE_ENV || 'development',
-  clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.string().transform((val) => parseInt(val, 10)).default('5000'),
+  CLIENT_URL: z.string().default('http://localhost:5173'),
 
-  databaseUrl: process.env.DATABASE_URL || '',
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+
+  // JWT Secret Configuration - supports both JWT_SECRET and JWT_ACCESS_SECRET
+  JWT_SECRET: z.string().optional(),
+  JWT_ACCESS_SECRET: z.string().optional(),
+  JWT_EXPIRES_IN: z.string().default('24h'),
+
+  // Distinct Administrator Bootstrap Secret (Never falls back to JWT secret)
+  ADMIN_BOOTSTRAP_SECRET: z.string().optional(),
+
+  // Redis Configuration
+  REDIS_HOST: z.string().default('localhost'),
+  REDIS_PORT: z.string().transform((val) => parseInt(val, 10)).default('6379'),
+  REDIS_PASSWORD: z.string().optional(),
+  REDIS_URL: z.string().optional(),
+
+  // Bcrypt
+  BCRYPT_SALT_ROUNDS: z.string().transform((val) => parseInt(val, 10)).default('12'),
+
+  // Rate Limiting
+  RATE_LIMIT_WINDOW_MS: z.string().transform((val) => parseInt(val, 10)).default('900000'), // 15 mins
+  RATE_LIMIT_MAX_REQUESTS: z.string().transform((val) => parseInt(val, 10)).default('100'),
+  AUTH_RATE_LIMIT_MAX: z.string().transform((val) => parseInt(val, 10)).default('15'),
+});
+
+const parsedEnv = envSchema.safeParse(process.env);
+
+if (!parsedEnv.success) {
+  console.error('❌ FATAL: Invalid application environment configuration:');
+  console.error(parsedEnv.error.format());
+  process.exit(1);
+}
+
+const rawConfig = parsedEnv.data;
+
+// Resolve JWT Secret from JWT_SECRET or JWT_ACCESS_SECRET
+const effectiveJwtSecret = rawConfig.JWT_SECRET || rawConfig.JWT_ACCESS_SECRET;
+
+// In production, enforce mandatory secrets and disallow insecure fallbacks
+if (rawConfig.NODE_ENV === 'production') {
+  if (!effectiveJwtSecret || effectiveJwtSecret.length < 32) {
+    console.error('❌ FATAL: JWT_SECRET or JWT_ACCESS_SECRET must be configured with at least 32 characters in production.');
+    process.exit(1);
+  }
+
+  if (!rawConfig.ADMIN_BOOTSTRAP_SECRET || rawConfig.ADMIN_BOOTSTRAP_SECRET.length < 16) {
+    console.error('❌ FATAL: ADMIN_BOOTSTRAP_SECRET must be explicitly configured with at least 16 characters in production.');
+    process.exit(1);
+  }
+
+  if (rawConfig.ADMIN_BOOTSTRAP_SECRET === effectiveJwtSecret) {
+    console.error('❌ FATAL: ADMIN_BOOTSTRAP_SECRET must be distinct from JWT_SECRET to prevent privilege escalation.');
+    process.exit(1);
+  }
+}
+
+export const config = {
+  port: rawConfig.PORT,
+  nodeEnv: rawConfig.NODE_ENV,
+  clientUrl: rawConfig.CLIENT_URL,
+  databaseUrl: rawConfig.DATABASE_URL,
 
   redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
-    url: process.env.REDIS_URL,
+    host: rawConfig.REDIS_HOST,
+    port: rawConfig.REDIS_PORT,
+    password: rawConfig.REDIS_PASSWORD,
+    url: rawConfig.REDIS_URL,
   },
 
   jwt: {
-    secret: process.env.JWT_SECRET || 'balance-vault-fallback-secret-key-change-in-prod',
-    expiresIn: process.env.JWT_EXPIRES_IN || '24h',
+    secret: effectiveJwtSecret || 'balance-vault-dev-secret-key-min-32-chars-long-12345',
+    expiresIn: rawConfig.JWT_EXPIRES_IN,
   },
 
+  adminBootstrapSecret: rawConfig.ADMIN_BOOTSTRAP_SECRET || (rawConfig.NODE_ENV === 'production' ? '' : 'balance-vault-dev-bootstrap-key-2026'),
+
   bcrypt: {
-    saltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10),
+    saltRounds: rawConfig.BCRYPT_SALT_ROUNDS,
   },
 
   rateLimit: {
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 mins
-    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
-    authMaxRequests: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '10', 10),
-  },
-
-  defaultAdmin: {
-    email: process.env.DEFAULT_ADMIN_EMAIL || 'admin@balancevault.com',
-    password: process.env.DEFAULT_ADMIN_PASSWORD || 'Admin@123',
-    name: process.env.DEFAULT_ADMIN_NAME || 'System Administrator',
+    windowMs: rawConfig.RATE_LIMIT_WINDOW_MS,
+    maxRequests: rawConfig.RATE_LIMIT_MAX_REQUESTS,
+    authMaxRequests: rawConfig.AUTH_RATE_LIMIT_MAX,
   },
 };

@@ -1,3 +1,12 @@
+# ==============================================================================
+# ⚠️ BALANCEVAULT DEVELOPMENT PROTOTYPE & OFFLINE SIMULATOR ONLY
+# ⚠️ DO NOT DEPLOY AS THE PRODUCTION FINANCIAL SERVICE
+# 
+# Authoritative Production Service: Node.js / TypeScript (src/server.ts)
+# Production Database: PostgreSQL with Prisma ORM (prisma/schema.prisma)
+# Production Financial Ledger: ACID Double-Entry with Decimal Precision
+# ==============================================================================
+
 import http.server
 import socketserver
 import json
@@ -1191,7 +1200,8 @@ def run_server():
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), BalanceVaultSecureHandler) as httpd:
         print(f"\n=======================================================")
-        print(f"🛡️ BalanceVault Cybersecurity-Hardened Server running on port {PORT}")
+        print(f"🛡️ BalanceVault Development Prototype Simulator running on port {PORT}")
+        print(f"⚠️ [DEVELOPMENT ONLY] Authoritative production backend: TypeScript (src/server.ts)")
         print(f"🔒 Controls: OWASP Top 10 • PBKDF2 • CSP • HSTS • Double-Entry • Idempotency")
         print(f"=======================================================\n")
         try:

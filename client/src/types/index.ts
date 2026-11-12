@@ -1,6 +1,6 @@
-export type Role = 'ADMIN' | 'USER' | 'AUDITOR' | 'OPERATOR';
+export type Role = 'ADMIN' | 'ACCOUNT_HOLDER' | 'AUDITOR' | 'USER';
 
-export type AccountType = 'CHECKING' | 'SAVINGS' | 'INVESTMENT' | 'TREASURY' | 'ESCROW';
+export type AccountType = 'CHECKING' | 'SAVINGS' | 'INVESTMENT' | 'TREASURY' | 'ESCROW' | 'SETTLEMENT_CLEARING';
 
 export type AccountStatus = 'ACTIVE' | 'FROZEN' | 'CLOSED';
 
@@ -11,6 +11,16 @@ export type TransactionStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'REVERSED';
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'WARNING';
 
 export type SecuritySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface AccountPermission {
+  id: string;
+  userId: string;
+  accountId: string;
+  canView: boolean;
+  canDeposit: boolean;
+  canWithdraw: boolean;
+  canTransfer: boolean;
+}
 
 export interface User {
   id: string;
@@ -37,6 +47,7 @@ export interface Account {
   currency: string;
   status: AccountStatus;
   userId: string;
+  permissions?: AccountPermission[];
   createdAt: string;
   updatedAt: string;
 }

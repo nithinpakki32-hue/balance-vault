@@ -1,6 +1,6 @@
 import { Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { AccountType, AccountStatus } from '@prisma/client';
+import { AccountType, AccountStatus, Role } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { AuthenticatedRequest } from '../types/index.js';
 import { AuditService } from '../services/audit.service.js';
@@ -15,8 +15,14 @@ const createAccountSchema = z.object({
 export class AccountController {
   static async listMyAccounts(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
+      const isPrivileged = req.user!.role === Role.ADMIN || req.user!.role === Role.AUDITOR;
       const accounts = await prisma.account.findMany({
-        where: { userId: req.user!.id },
+        where: isPrivileged ? {} : { userId: req.user!.id },
+        include: {
+          permissions: {
+            where: { userId: req.user!.id },
+          },
+        },
         orderBy: { createdAt: 'asc' },
       });
 
@@ -32,13 +38,18 @@ export class AccountController {
   static async getAccountById(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
+      const isPrivileged = req.user!.role === Role.ADMIN || req.user!.role === Role.AUDITOR;
+
       const account = await prisma.account.findFirst({
         where: {
           id,
-          // Allow admins to view any account, regular users only their own
-          ...(req.user!.role === 'ADMIN' ? {} : { userId: req.user!.id }),
+          // Privileged roles can view any account, regular users only their own
+          ...(isPrivileged ? {} : { userId: req.user!.id }),
         },
         include: {
+          permissions: {
+            where: { userId: req.user!.id },
+          },
           incomingTransactions: {
             take: 10,
             orderBy: { createdAt: 'desc' },
@@ -71,27 +82,53 @@ export class AccountController {
     try {
       const data = createAccountSchema.parse(req.body);
 
+      // AUDITOR role is strictly read-only and cannot create accounts
+      if (req.user!.role === Role.AUDITOR) {
+        res.status(403).json({
+          success: false,
+          message: 'Permission denied: Auditor is strictly read-only and cannot open new accounts.',
+        });
+        return;
+      }
+
       const typePrefixMap: Record<AccountType, string> = {
         CHECKING: 'CHK',
         SAVINGS: 'SAV',
         INVESTMENT: 'INV',
         TREASURY: 'TRS',
         ESCROW: 'ESC',
+        SETTLEMENT_CLEARING: 'CLR',
       };
 
       const prefix = typePrefixMap[data.type] || 'ACT';
       const accountNumber = `BV-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
 
-      const newAccount = await prisma.account.create({
-        data: {
-          accountNumber,
-          name: data.name,
-          type: data.type,
-          balance: data.initialBalance,
-          currency: data.currency,
-          status: AccountStatus.ACTIVE,
-          userId: req.user!.id,
-        },
+      // Atomic creation of account and owner permissions
+      const newAccount = await prisma.$transaction(async (tx) => {
+        const account = await tx.account.create({
+          data: {
+            accountNumber,
+            name: data.name,
+            type: data.type,
+            balance: data.initialBalance,
+            currency: data.currency,
+            status: AccountStatus.ACTIVE,
+            userId: req.user!.id,
+          },
+        });
+
+        await tx.accountPermission.create({
+          data: {
+            userId: req.user!.id,
+            accountId: account.id,
+            canView: true,
+            canDeposit: true,
+            canWithdraw: true,
+            canTransfer: true,
+          },
+        });
+
+        return account;
       });
 
       await AuditService.log({

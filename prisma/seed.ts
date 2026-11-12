@@ -1,51 +1,42 @@
-import { PrismaClient, Role, AccountType, AccountStatus, TransactionType, TransactionStatus, AuditStatus } from '@prisma/client';
+import { PrismaClient, Role, AccountType, AccountStatus, AuditStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient({
-  log: ['info', 'warn', 'error'],
+  log: ['warn', 'error'],
 });
 
 async function main() {
-  console.log('🚀 Starting BalanceVault database bootstrap and seeding...');
+  console.log('🚀 BalanceVault Seeding & Initialization...');
 
-  const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@balancevault.com';
-  const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Admin@123';
-  const adminName = process.env.DEFAULT_ADMIN_NAME || 'System Administrator';
+  // 1. Guard against running demo seeds in production
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('⚠️ [Production Safeguard]: Routine development seeding is prohibited in production.');
+    console.warn('⚠️ Use the secure, controlled endpoint POST /api/auth/bootstrap-admin with ADMIN_BOOTSTRAP_SECRET.');
+    process.exit(0);
+  }
 
-  try {
-    // 1. Hash Admin Password securely
-    const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS) || 12;
+  const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS) || 12;
+
+  // 2. Local Development Seed: Admin (Only if no admin exists)
+  const existingAdminCount = await prisma.user.count({ where: { role: Role.ADMIN } });
+  if (existingAdminCount === 0) {
+    console.log('🌱 Seeding local development administrator...');
+    const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@balancevault.com';
+    const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Admin@123';
     const adminPasswordHash = await bcrypt.hash(adminPassword, saltRounds);
 
-    console.log(`🔐 Bootstrapping primary administrator [${adminEmail}]...`);
-
-    // 2. Safe, idempotent User upsert (avoids raw SQL / DDL that triggers SQLSTATE 42501)
-    const adminUser = await prisma.user.upsert({
-      where: { email: adminEmail },
-      update: {
-        fullName: adminName,
-        role: Role.ADMIN,
-        isActive: true,
-      },
-      create: {
-        email: adminEmail,
+    const adminUser = await prisma.user.create({
+      data: {
+        email: adminEmail.toLowerCase(),
         passwordHash: adminPasswordHash,
-        fullName: adminName,
+        fullName: 'Development Administrator',
         role: Role.ADMIN,
         isActive: true,
       },
     });
 
-    console.log(`✅ Administrator ready: ${adminUser.email} (ID: ${adminUser.id})`);
-
-    // 3. Create or ensure Treasury Settlement Account for the Admin
-    const treasuryAccount = await prisma.account.upsert({
-      where: { accountNumber: 'BV-TREASURY-001' },
-      update: {
-        userId: adminUser.id,
-        status: AccountStatus.ACTIVE,
-      },
-      create: {
+    const treasuryAccount = await prisma.account.create({
+      data: {
         accountNumber: 'BV-TREASURY-001',
         name: 'Master Vault Treasury',
         type: AccountType.TREASURY,
@@ -56,33 +47,42 @@ async function main() {
       },
     });
 
-    console.log(`🏦 Treasury Account initialized: ${treasuryAccount.accountNumber} with Balance: $${treasuryAccount.balance}`);
+    await prisma.accountPermission.create({
+      data: {
+        userId: adminUser.id,
+        accountId: treasuryAccount.id,
+        canView: true,
+        canDeposit: true,
+        canWithdraw: true,
+        canTransfer: true,
+      },
+    });
 
-    // 4. Create a Demo Member User for testing & hackathon demonstration
-    const demoUserEmail = 'user@balancevault.com';
+    console.log(`✅ Development Administrator initialized: ${adminUser.email}`);
+  } else {
+    console.log('ℹ️ Administrator already exists. Preserving existing admin credentials and permissions.');
+  }
+
+  // 3. Local Development Seed: Demo Member User (Role: ACCOUNT_HOLDER)
+  const demoEmail = 'user@balancevault.com';
+  const existingDemoUser = await prisma.user.findUnique({ where: { email: demoEmail } });
+
+  if (!existingDemoUser) {
+    console.log('🌱 Seeding local development demo member account...');
     const demoPasswordHash = await bcrypt.hash('User@123', saltRounds);
 
-    const demoUser = await prisma.user.upsert({
-      where: { email: demoUserEmail },
-      update: {
-        fullName: 'Alex Vance',
-        role: Role.USER,
-        isActive: true,
-      },
-      create: {
-        email: demoUserEmail,
+    const demoUser = await prisma.user.create({
+      data: {
+        email: demoEmail,
         passwordHash: demoPasswordHash,
         fullName: 'Alex Vance',
-        role: Role.USER,
+        role: Role.ACCOUNT_HOLDER, // Role matches Prisma enum
         isActive: true,
       },
     });
 
-    // 5. Create Demo Accounts
-    const demoChecking = await prisma.account.upsert({
-      where: { accountNumber: 'BV-CHK-100293' },
-      update: { userId: demoUser.id },
-      create: {
+    const demoChecking = await prisma.account.create({
+      data: {
         accountNumber: 'BV-CHK-100293',
         name: 'Primary Checking',
         type: AccountType.CHECKING,
@@ -93,10 +93,8 @@ async function main() {
       },
     });
 
-    const demoSavings = await prisma.account.upsert({
-      where: { accountNumber: 'BV-SAV-883012' },
-      update: { userId: demoUser.id },
-      create: {
+    const demoSavings = await prisma.account.create({
+      data: {
         accountNumber: 'BV-SAV-883012',
         name: 'High-Yield Reserve',
         type: AccountType.SAVINGS,
@@ -107,58 +105,61 @@ async function main() {
       },
     });
 
-    console.log(`👤 Demo accounts initialized for ${demoUser.email} (Checking: ${demoChecking.accountNumber}, Savings: ${demoSavings.accountNumber})`);
-
-    // 6. Safe Audit Event Logging
-    // PostgreSQL permission safe: Pure INSERT through client ORM, wrapped in safety block
-    try {
-      await prisma.auditLog.create({
-        data: {
-          action: 'SYSTEM_BOOTSTRAP',
-          resource: 'SYSTEM',
-          resourceId: adminUser.id,
-          userId: adminUser.id,
-          ipAddress: '127.0.0.1',
-          userAgent: 'BalanceVault-Bootstrapper/1.0',
-          status: AuditStatus.SUCCESS,
-          metadata: {
-            message: 'Database seeded with administrator and initial treasury accounts',
-            adminEmail: adminUser.email,
-            timestamp: new Date().toISOString(),
-          },
+    await prisma.accountPermission.createMany({
+      data: [
+        {
+          userId: demoUser.id,
+          accountId: demoChecking.id,
+          canView: true,
+          canDeposit: true,
+          canWithdraw: true,
+          canTransfer: true,
         },
-      });
+        {
+          userId: demoUser.id,
+          accountId: demoSavings.id,
+          canView: true,
+          canDeposit: true,
+          canWithdraw: true,
+          canTransfer: true,
+        },
+      ],
+    });
 
-      console.log('📜 Initial audit event recorded safely.');
-    } catch (auditError: any) {
-      // Gracefully handle any role/grant limitation (e.g., SQLSTATE 42501)
-      if (auditError?.code === 'P2010' || auditError?.message?.includes('42501')) {
-        console.warn('⚠️ [SQLSTATE 42501 Safety Notice] Audit table write was restricted by PostgreSQL role policies. Continuing bootstrap without blocking.');
-      } else {
-        console.warn('⚠️ Non-fatal audit log warning:', auditError?.message || auditError);
-      }
-    }
-
-    console.log('\n======================================================');
-    console.log('🎉 BalanceVault database bootstrap completed successfully!');
-    console.log('Default Administrator Credentials:');
-    console.log(`   Email:    ${adminEmail}`);
-    console.log(`   Password: ${adminPassword}`);
-    console.log('Demo Member Credentials:');
-    console.log(`   Email:    ${demoUserEmail}`);
-    console.log(`   Password: User@123`);
-    console.log('======================================================\n');
-  } catch (error: any) {
-    if (error?.message?.includes('42501') || error?.code === '42501') {
-      console.error('❌ PostgreSQL Permission Error (SQLSTATE 42501): The database user lacks sufficient privileges.');
-      console.error('Please ensure the DATABASE_URL user has GRANT ALL on schema public or table ownership.');
-    } else {
-      console.error('❌ Bootstrap failed with error:', error);
-    }
-    process.exit(1);
-  } finally {
-    await prisma.$disconnect();
+    console.log(`✅ Demo Member account created: ${demoUser.email}`);
+  } else {
+    console.log('ℹ️ Demo Member account already exists. Preserving balances and passwords.');
   }
+
+  // 4. Local Development Seed: Compliance Auditor User (Role: AUDITOR)
+  const auditorEmail = 'auditor@balancevault.com';
+  const existingAuditor = await prisma.user.findUnique({ where: { email: auditorEmail } });
+
+  if (!existingAuditor) {
+    console.log('🌱 Seeding local compliance auditor account...');
+    const auditorPasswordHash = await bcrypt.hash('Auditor@123', saltRounds);
+
+    const auditorUser = await prisma.user.create({
+      data: {
+        email: auditorEmail,
+        passwordHash: auditorPasswordHash,
+        fullName: 'Internal Auditor',
+        role: Role.AUDITOR,
+        isActive: true,
+      },
+    });
+
+    console.log(`✅ Compliance Auditor created: ${auditorUser.email}`);
+  }
+
+  console.log('✨ BalanceVault development database seeding completed cleanly.');
 }
 
-main();
+main()
+  .catch((e) => {
+    console.error('❌ Error during database seeding:', e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

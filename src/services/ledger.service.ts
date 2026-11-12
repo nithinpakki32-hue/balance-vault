@@ -1,4 +1,4 @@
-import { Prisma, LedgerEntryType, TransactionType } from '@prisma/client';
+import { Prisma, LedgerEntryType, TransactionType, AccountType } from '@prisma/client';
 
 export interface LedgerPostingInstruction {
   accountId: string;
@@ -39,9 +39,38 @@ export class LedgerService {
   ): Promise<void> {
     const instructions: LedgerPostingInstruction[] = [];
 
+    // Helper to resolve or fallback to central settlement clearing account
+    const getClearingAccount = async (): Promise<string> => {
+      if (clearingAccountId) return clearingAccountId;
+      const treasury = await tx.account.findFirst({
+        where: {
+          OR: [
+            { type: AccountType.SETTLEMENT_CLEARING },
+            { type: AccountType.TREASURY },
+            { accountNumber: 'BV-TREASURY-001' },
+          ],
+        },
+      });
+      if (treasury) return treasury.id;
+      // If none exists, create a designated settlement pool
+      const newClearing = await tx.account.create({
+        data: {
+          accountNumber: 'BV-CLEARING-POOL',
+          name: 'Central Settlement Clearing Pool',
+          type: AccountType.SETTLEMENT_CLEARING,
+          balance: new Prisma.Decimal(0),
+          userId: (await tx.user.findFirstOrThrow({ where: { role: 'ADMIN' } })).id,
+        },
+      });
+      return newClearing.id;
+    };
+
     if (transactionType === TransactionType.TRANSFER) {
       if (!sourceAccountId || !destinationAccountId) {
         throw new Error('Transfer requires both source and destination account IDs for double-entry posting.');
+      }
+      if (sourceAccountId === destinationAccountId) {
+        throw new Error('Transfer source and destination accounts cannot be identical.');
       }
       instructions.push(
         { accountId: sourceAccountId, entryType: LedgerEntryType.DEBIT, amount },
@@ -51,21 +80,21 @@ export class LedgerService {
       if (!destinationAccountId) {
         throw new Error('Deposit requires a valid destination account ID.');
       }
-      // Central clearing account is debited, customer account is credited
-      const settlementId = clearingAccountId || destinationAccountId;
+      const clearingId = await getClearingAccount();
+      // Clearing account is debited, customer account is credited
       instructions.push(
-        { accountId: settlementId, entryType: LedgerEntryType.DEBIT, amount },
+        { accountId: clearingId, entryType: LedgerEntryType.DEBIT, amount },
         { accountId: destinationAccountId, entryType: LedgerEntryType.CREDIT, amount }
       );
     } else if (transactionType === TransactionType.WITHDRAWAL) {
       if (!sourceAccountId) {
         throw new Error('Withdrawal requires a valid source account ID.');
       }
-      // Customer account is debited, settlement/cash clearing account is credited
-      const settlementId = clearingAccountId || sourceAccountId;
+      const clearingId = await getClearingAccount();
+      // Customer account is debited, clearing account is credited
       instructions.push(
         { accountId: sourceAccountId, entryType: LedgerEntryType.DEBIT, amount },
-        { accountId: settlementId, entryType: LedgerEntryType.CREDIT, amount }
+        { accountId: clearingId, entryType: LedgerEntryType.CREDIT, amount }
       );
     }
 

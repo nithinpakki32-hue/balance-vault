@@ -6,6 +6,9 @@ import { redisClient, isRedisConnected } from '../config/redis.js';
 // In-memory token blacklist fallback when Redis is absent
 const inMemoryBlacklist = new Set<string>();
 
+// In-memory replay protection for TOTP time-steps (userId:step)
+const usedTotpSteps = new Set<string>();
+
 // Rate limit violation counters
 let rateLimitViolationCount = 0;
 
@@ -21,7 +24,7 @@ export interface SecurityEventData {
 
 export class SecurityService {
   /**
-   * Enforce strong password complexity rules
+   * Enforce strong password complexity rules (OWASP compliant)
    */
   static validatePasswordStrength(password: string): { isValid: boolean; message?: string } {
     if (password.length < 10) {
@@ -40,9 +43,8 @@ export class SecurityService {
       return { isValid: false, message: 'Password must contain at least one special character (!@#$%^&*...).' };
     }
 
-    // Common weak password patterns
-    const commonPatterns = ['password', '123456', 'balancevault', 'qwerty', 'admin123'];
-    if (commonPatterns.some(p => password.toLowerCase().includes(p))) {
+    const commonPatterns = ['password', '123456', 'balancevault', 'qwerty', 'admin123', 'admin@123'];
+    if (commonPatterns.some((p) => password.toLowerCase().includes(p))) {
       return { isValid: false, message: 'Password contains easily guessable dictionary terms.' };
     }
 
@@ -81,7 +83,12 @@ export class SecurityService {
   /**
    * Register a failed login attempt; lock if threshold is reached (5 attempts -> 15 min lock)
    */
-  static async recordFailedLogin(userId: string, currentAttempts: number, ip?: string, userAgent?: string): Promise<{ isLocked: boolean; lockoutMinutes: number }> {
+  static async recordFailedLogin(
+    userId: string,
+    currentAttempts: number,
+    ip?: string,
+    userAgent?: string
+  ): Promise<{ isLocked: boolean; lockoutMinutes: number }> {
     const attempts = currentAttempts + 1;
     const maxAttempts = 5;
     const lockoutMinutes = 15;
@@ -148,6 +155,65 @@ export class SecurityService {
     const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins expiry
     return { rawToken, hashedToken, expiresAt };
+  }
+
+  /**
+   * RFC 6238 Standard TOTP Implementation (HMAC-SHA1, 30s period, 6-digit numeric OTP)
+   */
+  static generateTotpSecret(): string {
+    return crypto.randomBytes(20).toString('hex');
+  }
+
+  static generateTotpCode(secretHex: string, timeStep: number): string {
+    const key = Buffer.from(secretHex, 'hex');
+    const timeBuffer = Buffer.alloc(8);
+    timeBuffer.writeBigInt64BE(BigInt(timeStep));
+
+    const hmac = crypto.createHmac('sha1', key).update(timeBuffer).digest();
+    const offset = hmac[hmac.length - 1] & 0x0f;
+    const binary =
+      ((hmac[offset] & 0x7f) << 24) |
+      ((hmac[offset + 1] & 0xff) << 16) |
+      ((hmac[offset + 2] & 0xff) << 8) |
+      (hmac[offset + 3] & 0xff);
+
+    const otp = binary % 1000000;
+    return otp.toString().padStart(6, '0');
+  }
+
+  static verifyTotp(
+    userId: string,
+    secretHex: string,
+    token: string,
+    window: number = 1
+  ): { valid: boolean; reason?: string } {
+    if (!token || token.length !== 6 || !/^\d{6}$/.test(token)) {
+      return { valid: false, reason: 'Invalid token format. 6-digit numeric code required.' };
+    }
+
+    if (!secretHex) {
+      return { valid: false, reason: 'MFA is not configured for this account.' };
+    }
+
+    const currentStep = Math.floor(Date.now() / 1000 / 30);
+
+    for (let stepOffset = -window; stepOffset <= window; stepOffset++) {
+      const step = currentStep + stepOffset;
+      const expectedOtp = this.generateTotpCode(secretHex, step);
+
+      if (crypto.timingSafeEqual(Buffer.from(token, 'utf-8'), Buffer.from(expectedOtp, 'utf-8'))) {
+        // Replay Protection Check: Prevent reuse of the same time-step code
+        const replayKey = `totp_used:${userId}:${step}`;
+        if (usedTotpSteps.has(replayKey)) {
+          return { valid: false, reason: 'MFA token has already been used. Replay attacks are prohibited.' };
+        }
+        usedTotpSteps.add(replayKey);
+        setTimeout(() => usedTotpSteps.delete(replayKey), 120000); // 2 minute memory retention
+        return { valid: true };
+      }
+    }
+
+    return { valid: false, reason: 'Invalid or expired MFA verification code.' };
   }
 
   /**

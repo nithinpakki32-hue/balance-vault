@@ -57,7 +57,8 @@
         <!-- Role switch selector -->
         <select id="user-switcher" onchange="switchDemoUser(this.value)" class="bg-slate-900 border border-slate-700 rounded-lg text-xs px-2 py-1 text-slate-300 focus:outline-none focus:border-cyan-500">
           <option value="admin">Admin (admin@balancevault.com)</option>
-          <option value="user">Member (user@balancevault.com)</option>
+          <option value="user">Account Holder (user@balancevault.com)</option>
+          <option value="auditor">Auditor (auditor@balancevault.com)</option>
         </select>
       </div>
     </div>
@@ -582,7 +583,8 @@
       currentUser: 'admin',
       users: [
         { id: 'usr-1', email: 'admin@balancevault.com', name: 'System Administrator', role: 'ADMIN', active: true, accounts: 1, failedLogins: 0, locked: false, mfa: true },
-        { id: 'usr-2', email: 'user@balancevault.com', name: 'Alex Vance', role: 'USER', active: true, accounts: 2, failedLogins: 0, locked: false, mfa: false }
+        { id: 'usr-2', email: 'user@balancevault.com', name: 'Alex Vance', role: 'ACCOUNT_HOLDER', active: true, accounts: 2, failedLogins: 0, locked: false, mfa: false },
+        { id: 'usr-3', email: 'auditor@balancevault.com', name: 'Compliance Auditor', role: 'AUDITOR', active: true, accounts: 0, failedLogins: 0, locked: false, mfa: false }
       ],
       accounts: [
         { id: 'acc-1', userId: 'usr-1', number: 'BV-TREASURY-001', name: 'Master Vault Treasury', type: 'TREASURY', balance: 1000000.00, status: 'ACTIVE' },
@@ -610,7 +612,7 @@
     };
 
     function render() {
-      const activeUser = state.currentUser === 'admin' ? state.users[0] : state.users[1];
+      const activeUser = state.currentUser === 'admin' ? state.users[0] : state.currentUser === 'auditor' ? state.users[2] : state.users[1];
 
       // Update Nav
       document.getElementById('nav-user-name').innerText = activeUser.name;
@@ -624,13 +626,17 @@
       if (activeUser.role === 'ADMIN') {
         roleBadge.className = 'text-xs font-mono uppercase px-1.5 py-0.2 rounded font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20';
         document.getElementById('rbac-nav-section').classList.remove('hidden');
+      } else if (activeUser.role === 'AUDITOR') {
+        roleBadge.className = 'text-xs font-mono uppercase px-1.5 py-0.2 rounded font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20';
+        document.getElementById('rbac-nav-section').classList.remove('hidden');
       } else {
         roleBadge.className = 'text-xs font-mono uppercase px-1.5 py-0.2 rounded font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20';
         document.getElementById('rbac-nav-section').classList.add('hidden');
       }
 
-      // Filter accounts for current active user
-      const myAccounts = state.accounts.filter(a => activeUser.role === 'ADMIN' ? true : a.userId === activeUser.id);
+      // Filter accounts for current active user (Auditor & Admin can inspect all accounts)
+      const isPrivileged = activeUser.role === 'ADMIN' || activeUser.role === 'AUDITOR';
+      const myAccounts = state.accounts.filter(a => isPrivileged ? true : a.userId === activeUser.id);
       const totalBalance = myAccounts.reduce((acc, curr) => acc + curr.balance, 0);
 
       // Update Metrics

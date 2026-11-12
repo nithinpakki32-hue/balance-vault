@@ -44,6 +44,7 @@ export async function request<T = any>(
 export const api = {
   // Auth
   register: (payload: any) => request('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
+  bootstrapAdmin: (payload: any) => request('/auth/bootstrap-admin', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload: any) => request('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   resetPassword: (payload: any) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
@@ -56,15 +57,33 @@ export const api = {
   createAccount: (payload: any) => request('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
   getAccount: (id: string) => request(`/accounts/${id}`),
 
-  // Transactions
-  transfer: (payload: any) => request('/transactions/transfer', { method: 'POST', body: JSON.stringify(payload) }),
-  deposit: (payload: any) => request('/transactions/deposit', { method: 'POST', body: JSON.stringify(payload) }),
+  // Transactions with Idempotency Key support
+  transfer: (payload: any, idempotencyKey?: string) =>
+    request('/transactions/transfer', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    }),
+  deposit: (payload: any, idempotencyKey?: string) =>
+    request('/transactions/deposit', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    }),
+  withdraw: (payload: any, idempotencyKey?: string) =>
+    request('/transactions/withdraw', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    }),
   getTransactions: (page = 1, limit = 20) => request(`/transactions?page=${page}&limit=${limit}`),
 
   // Admin & SOC
   getUsers: (page = 1, limit = 20, search?: string) =>
     request(`/admin/users?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
   updateUser: (id: string, payload: any) => request(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateAccountPermissions: (accountId: string, payload: any) =>
+    request(`/admin/accounts/${accountId}/permissions`, { method: 'PATCH', body: JSON.stringify(payload) }),
   getAuditLogs: (page = 1, limit = 25, search?: string) =>
     request(`/admin/audit-logs?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
   getSecurityStats: () => request('/admin/security-stats'),

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { Role, AccountType, SecurityEventType, SecuritySeverity } from '@prisma/client';
 import { prisma, executeWithRetry } from '../lib/prisma.js';
+import { config } from '../config/env.js';
 import { TokenService } from '../services/token.service.js';
 import { AuditService } from '../services/audit.service.js';
 import { SecurityService } from '../services/security.service.js';
@@ -45,17 +46,33 @@ export class AuthController {
    * Can happen ONLY ONCE. Subsequent attempts are rejected with HTTP 409 Conflict.
    */
   static async bootstrapAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const clientIp = req.ip || req.socket.remoteAddress;
+    const userAgent = req.get('user-agent');
+
     try {
       const data = bootstrapAdminSchema.parse(req.body);
 
-      // Validate bootstrap secret from environment
-      const expectedSecret = process.env.ADMIN_BOOTSTRAP_SECRET || process.env.JWT_SECRET || 'balance-vault-bootstrap-secret-2026';
-      if (data.bootstrapSecret !== expectedSecret) {
+      // Validate bootstrap secret from environment (strictly separate from JWT secret)
+      const expectedSecret = config.adminBootstrapSecret;
+      if (!expectedSecret || expectedSecret.length < 16) {
+        res.status(500).json({
+          success: false,
+          message: 'Server error: ADMIN_BOOTSTRAP_SECRET is not securely configured on the server.',
+        });
+        return;
+      }
+
+      const isSecretValid =
+        data.bootstrapSecret.length === expectedSecret.length &&
+        crypto.timingSafeEqual(Buffer.from(data.bootstrapSecret, 'utf-8'), Buffer.from(expectedSecret, 'utf-8'));
+
+      if (!isSecretValid) {
         await SecurityService.logSecurityEvent({
           eventType: SecurityEventType.UNAUTHORIZED_ACCESS,
           severity: SecuritySeverity.CRITICAL,
-          details: `Unauthorized attempt to trigger Administrator Bootstrap for ${data.email}`,
-          ipAddress: req.ip || req.socket.remoteAddress,
+          details: `Unauthorized attempt to trigger Administrator Bootstrap for email '${data.email}'`,
+          ipAddress: clientIp,
+          userAgent,
         });
 
         res.status(403).json({
@@ -65,7 +82,7 @@ export class AuthController {
         return;
       }
 
-      // Check if an Administrator already exists
+      // Pre-flight check: ensure no admin currently exists
       const existingAdminCount = await executeWithRetry((client) =>
         client.user.count({ where: { role: Role.ADMIN } })
       );
@@ -74,8 +91,9 @@ export class AuthController {
         await SecurityService.logSecurityEvent({
           eventType: SecurityEventType.UNAUTHORIZED_ACCESS,
           severity: SecuritySeverity.HIGH,
-          details: `Rejected redundant Administrator Bootstrap attempt for ${data.email} - Admin already exists.`,
-          ipAddress: req.ip || req.socket.remoteAddress,
+          details: `Rejected redundant Administrator Bootstrap attempt for ${data.email} - Admin already initialized.`,
+          ipAddress: clientIp,
+          userAgent,
         });
 
         res.status(409).json({
@@ -85,59 +103,81 @@ export class AuthController {
         return;
       }
 
-      // Validate password strength
+      // Validate password strength against strict OWASP rules
       const strength = SecurityService.validatePasswordStrength(data.password);
       if (!strength.isValid) {
         res.status(400).json({ success: false, message: strength.message });
         return;
       }
 
-      const passwordHash = await bcrypt.hash(data.password, 12);
+      const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
       const treasuryNumber = 'BV-TREASURY-001';
+      const mfaSecret = SecurityService.generateTotpSecret();
 
-      // Atomic administrator creation
-      const adminUser = await prisma.$transaction(async (tx) => {
-        const user = await tx.user.create({
-          data: {
-            email: data.email.toLowerCase(),
-            passwordHash,
-            fullName: data.fullName,
-            role: Role.ADMIN,
-            isActive: true,
-          },
-        });
+      // Atomic, race-condition-free administrator creation inside Serializable transaction
+      const adminUser = await prisma.$transaction(
+        async (tx) => {
+          // Double-check inside transaction with row/table isolation
+          const countInsideTx = await tx.user.count({ where: { role: Role.ADMIN } });
+          if (countInsideTx > 0) {
+            throw new Error('DUPLICATE_BOOTSTRAP_DETECTED');
+          }
 
-        const treasury = await tx.account.create({
-          data: {
-            accountNumber: treasuryNumber,
-            name: 'Master Vault Treasury',
-            type: AccountType.TREASURY,
-            balance: 1000000.0000,
-            currency: 'USD',
-            userId: user.id,
-          },
-        });
+          // Check if an existing account with this email exists (do not silently overwrite or promote)
+          const existingUserWithEmail = await tx.user.findUnique({
+            where: { email: data.email.toLowerCase() },
+          });
 
-        await tx.accountPermission.create({
-          data: {
-            userId: user.id,
-            accountId: treasury.id,
-            canView: true,
-            canDeposit: true,
-            canWithdraw: true,
-            canTransfer: true,
-          },
-        });
+          if (existingUserWithEmail) {
+            throw new Error('EMAIL_ALREADY_REGISTERED');
+          }
 
-        return user;
-      });
+          const user = await tx.user.create({
+            data: {
+              email: data.email.toLowerCase(),
+              passwordHash,
+              fullName: data.fullName,
+              role: Role.ADMIN,
+              isActive: true,
+              mfaEnabled: true,
+              mfaSecret,
+            },
+          });
+
+          const treasury = await tx.account.create({
+            data: {
+              accountNumber: treasuryNumber,
+              name: 'Master Vault Treasury',
+              type: AccountType.TREASURY,
+              balance: 1000000.0000,
+              currency: 'USD',
+              userId: user.id,
+            },
+          });
+
+          await tx.accountPermission.create({
+            data: {
+              userId: user.id,
+              accountId: treasury.id,
+              canView: true,
+              canDeposit: true,
+              canWithdraw: true,
+              canTransfer: true,
+            },
+          });
+
+          return user;
+        },
+        { isolationLevel: 'Serializable' }
+      );
 
       await AuditService.log({
         action: 'SYSTEM_BOOTSTRAP',
         resource: 'USER',
         resourceId: adminUser.id,
         userId: adminUser.id,
-        ipAddress: req.ip || req.socket.remoteAddress,
+        ipAddress: clientIp,
+        userAgent,
         status: 'SUCCESS',
         metadata: {
           adminEmail: adminUser.email,
@@ -151,6 +191,7 @@ export class AuthController {
         role: adminUser.role,
       });
 
+      // Never return bootstrap secret or raw credentials
       res.status(201).json({
         success: true,
         message: 'Administrator successfully bootstrapped and Master Treasury initialized.',
@@ -162,16 +203,33 @@ export class AuthController {
           role: adminUser.role,
         },
       });
-    } catch (error) {
+    } catch (error: any) {
+      if (error.message === 'DUPLICATE_BOOTSTRAP_DETECTED') {
+        res.status(409).json({
+          success: false,
+          message: 'Conflict: Initial administrator bootstrap has already been completed. Further bootstrapping is disabled.',
+        });
+        return;
+      }
+      if (error.message === 'EMAIL_ALREADY_REGISTERED') {
+        res.status(400).json({
+          success: false,
+          message: 'An account with this email address already exists. Routine bootstrap cannot overwrite existing accounts.',
+        });
+        return;
+      }
       next(error);
     }
   }
 
   /**
    * Public Registration
-   * Strictly assigns role ACCOUNT_HOLDER. Users CANNOT assign themselves ADMIN privileges.
+   * Strictly assigns role ACCOUNT_HOLDER. Users CANNOT assign themselves ADMIN or AUDITOR privileges.
    */
   static async register(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const clientIp = req.ip || req.socket.remoteAddress;
+    const userAgent = req.get('user-agent');
+
     try {
       const data = registerSchema.parse(req.body);
 
@@ -200,7 +258,7 @@ export class AuthController {
         return;
       }
 
-      const passwordHash = await bcrypt.hash(data.password, 12);
+      const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
       const accountNumber = `BV-CHK-${Math.floor(100000 + Math.random() * 900000)}`;
 
       // Execute in atomic transaction
@@ -224,7 +282,7 @@ export class AuthController {
           },
         });
 
-        // Initialize account-level permissions
+        // Initialize account-level permissions (Deny transfer & withdrawal by default until verified if desired, or grant basic checking)
         await tx.accountPermission.create({
           data: {
             userId: user.id,
@@ -244,8 +302,8 @@ export class AuthController {
         resource: 'USER',
         resourceId: newUser.id,
         userId: newUser.id,
-        ipAddress: req.ip || req.socket.remoteAddress,
-        userAgent: req.get('user-agent'),
+        ipAddress: clientIp,
+        userAgent,
         metadata: {
           email: newUser.email,
           fullName: newUser.fullName,
@@ -284,7 +342,7 @@ export class AuthController {
       const clientIp = req.ip || req.socket.remoteAddress;
       const userAgent = req.get('user-agent');
 
-      // Resilient user query catching transient Neon connection timeouts
+      // Resilient user query catching transient connection drops
       let user: any = null;
       try {
         user = await executeWithRetry((client) =>
@@ -375,7 +433,7 @@ export class AuthController {
         return;
       }
 
-      // Verify MFA if enabled
+      // Verify MFA if enabled (Strict RFC 6238 TOTP with replay defense - NO hardcoded bypass)
       if (user.mfaEnabled) {
         if (!data.mfaCode) {
           res.status(200).json({
@@ -386,11 +444,12 @@ export class AuthController {
           return;
         }
 
-        if (data.mfaCode !== '123456' && data.mfaCode !== user.mfaSecret) {
+        const mfaCheck = SecurityService.verifyTotp(user.id, user.mfaSecret || '', data.mfaCode);
+        if (!mfaCheck.valid) {
           await SecurityService.logSecurityEvent({
             eventType: SecurityEventType.MFA_FAILED,
             severity: SecuritySeverity.MEDIUM,
-            details: `Invalid MFA verification attempt for user ${user.email}`,
+            details: `Invalid MFA verification attempt for user ${user.email}: ${mfaCheck.reason}`,
             userId: user.id,
             ipAddress: clientIp,
             userAgent,
@@ -398,7 +457,7 @@ export class AuthController {
 
           res.status(401).json({
             success: false,
-            message: 'Invalid MFA verification code.',
+            message: mfaCheck.reason || 'Invalid MFA verification code.',
           });
           return;
         }
@@ -446,7 +505,7 @@ export class AuthController {
       });
 
       if (user) {
-        const { rawToken, hashedToken, expiresAt } = SecurityService.generatePasswordResetToken();
+        const { hashedToken, expiresAt } = SecurityService.generatePasswordResetToken();
         await prisma.user.update({
           where: { id: user.id },
           data: {
@@ -462,15 +521,9 @@ export class AuthController {
           userId: user.id,
           ipAddress: req.ip || req.socket.remoteAddress,
         });
-
-        res.status(200).json({
-          success: true,
-          message: 'If the email exists in our system, a secure password reset token has been dispatched.',
-          resetToken: process.env.NODE_ENV !== 'production' ? rawToken : undefined,
-        });
-        return;
       }
 
+      // Never return the raw token in HTTP response or expose user existence
       res.status(200).json({
         success: true,
         message: 'If the email exists in our system, a secure password reset token has been dispatched.',
@@ -510,7 +563,7 @@ export class AuthController {
         return;
       }
 
-      const passwordHash = await bcrypt.hash(data.newPassword, 12);
+      const passwordHash = await bcrypt.hash(data.newPassword, config.bcrypt.saltRounds);
       await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -541,7 +594,7 @@ export class AuthController {
 
   static async setupMfa(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const secret = crypto.randomBytes(16).toString('hex').toUpperCase().slice(0, 16);
+      const secret = SecurityService.generateTotpSecret();
       await prisma.user.update({
         where: { id: req.user!.id },
         data: {
@@ -552,7 +605,7 @@ export class AuthController {
 
       res.status(200).json({
         success: true,
-        message: 'MFA initialized. Use backup code or TOTP app with secret.',
+        message: 'MFA initialized. Use standard authenticator app with this secret.',
         mfaSecret: secret,
       });
     } catch (error) {
