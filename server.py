@@ -18,12 +18,51 @@ import hmac
 import secrets
 import threading
 import mimetypes
+import base64
+import random
 from datetime import datetime, timedelta, timezone
 
 PORT = 8000
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), 'public')
 CLIENT_DIST_DIR = os.path.join(os.path.dirname(__file__), 'client', 'dist')
 db_lock = threading.Lock()
+
+JWT_SECRET = os.environ.get('JWT_SECRET', 'bv_prod_jwt_secret_key_84920485910293847582910293847501')
+
+def generate_jwt(user_id: str, email: str, role: str) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({'alg': 'HS256', 'typ': 'JWT'}).encode()).decode().rstrip('=')
+    now = int(time.time())
+    payload = {
+        'userId': user_id,
+        'email': email,
+        'role': role,
+        'iat': now,
+        'exp': now + 86400  # 24 hours
+    }
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+    sig = base64.urlsafe_b64encode(
+        hmac.new(JWT_SECRET.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
+    ).decode().rstrip('=')
+    return f"{header}.{body}.{sig}"
+
+def verify_jwt(token: str) -> dict | None:
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        header, body, sig = parts
+        expected_sig = base64.urlsafe_b64encode(
+            hmac.new(JWT_SECRET.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
+        ).decode().rstrip('=')
+        if not secrets.compare_digest(sig, expected_sig):
+            return None
+        body_padded = body + '=' * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(body_padded.encode()).decode())
+        if payload.get('exp') and payload['exp'] < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
 
 def get_utc_now():
     return datetime.now(timezone.utc)
@@ -372,6 +411,23 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
         auth_header = self.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header.split(' ', 1)[1].strip()
+            # 1. Try cryptographic JWT verification first
+            jwt_payload = verify_jwt(token)
+            if jwt_payload:
+                user = next((u for u in DB['users'] if u['id'] == jwt_payload.get('userId') and u.get('isActive', True)), None)
+                if user:
+                    return user
+                if jwt_payload.get('userId') and jwt_payload.get('email'):
+                    return {
+                        'id': jwt_payload['userId'],
+                        'email': jwt_payload['email'],
+                        'fullName': jwt_payload.get('fullName', jwt_payload['email'].split('@')[0]),
+                        'role': jwt_payload.get('role', 'ACCOUNT_HOLDER'),
+                        'isActive': True,
+                        'mfaEnabled': False
+                    }
+
+            # 2. Try session token lookup
             user_id = DB['sessions'].get(token)
             if user_id:
                 user = next((u for u in DB['users'] if u['id'] == user_id and u.get('isActive', True)), None)
@@ -379,7 +435,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                     return user
             # Token provided was invalid, forged, or unknown -> Must reject with 401
             DB['unauthorizedAttempts'] += 1
-            self._send_json(401, {'success': False, 'message': 'Access denied: Invalid, forged, or expired session token.'})
+            self._send_json(401, {'success': False, 'message': 'Unauthorized. Authentication token is invalid, forged, or expired.'})
             return None
 
         # For test runner without explicit token
@@ -388,7 +444,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
 
         # Missing token in public / external request
         DB['unauthorizedAttempts'] += 1
-        self._send_json(401, {'success': False, 'message': 'Access denied: Bearer authentication token is required.'})
+        self._send_json(401, {'success': False, 'message': 'Unauthorized. Authentication Bearer token is required.'})
         return None
 
     def _check_rate_limit(self, path: str, max_requests: int = 100) -> bool:
@@ -822,8 +878,10 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             user['failedAttempts'] = 0
             user['lockoutUntil'] = None
 
-            token = f"bv-sec-{secrets.token_urlsafe(32)}"
+            token = generate_jwt(user['id'], user['email'], user['role'])
+            legacy_token = f"bv-sec-{secrets.token_urlsafe(32)}"
             DB['sessions'][token] = user['id']
+            DB['sessions'][legacy_token] = user['id']
 
             DB['auditLogs'].insert(0, {
                 'id': f'aud-{len(DB["auditLogs"]) + 1}',
@@ -902,6 +960,135 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             })
             self._send_json(200, {'success': True, 'message': 'Password updated successfully. Please sign in.'})
             return
+
+        # 5.5 OPEN NEW ACCOUNT (ATOMIC DOUBLE-ENTRY + ROLE GOVERNANCE)
+        if path == '/api/accounts':
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+
+            if current_user['role'] == 'AUDITOR':
+                DB['unauthorizedAttempts'] += 1
+                self._send_json(403, {
+                    'success': False,
+                    'message': 'Permission denied: Auditor is strictly read-only and cannot open new accounts.'
+                })
+                return
+
+            account_name = str(body.get('name', '')).strip()
+            account_type = str(body.get('type', 'CHECKING')).upper().strip()
+            try:
+                init_bal = float(body.get('initialBalance', 0))
+            except (ValueError, TypeError):
+                self._send_json(400, {'success': False, 'message': 'Initial balance must be a valid number.'})
+                return
+
+            if len(account_name) < 2:
+                self._send_json(400, {'success': False, 'message': 'Account name must be at least 2 characters.'})
+                return
+
+            if init_bal < 0:
+                self._send_json(400, {'success': False, 'message': 'Initial balance cannot be negative.'})
+                return
+
+            if account_type in ('ESCROW', 'TREASURY', 'SETTLEMENT_CLEARING') and current_user['role'] != 'ADMIN':
+                DB['unauthorizedAttempts'] += 1
+                self._send_json(403, {
+                    'success': False,
+                    'message': f'Permission denied: Opening an {account_type} account requires ADMIN privileges.'
+                })
+                return
+
+            prefix_map = {
+                'CHECKING': 'CHK',
+                'SAVINGS': 'SAV',
+                'INVESTMENT': 'INV',
+                'TREASURY': 'TRS',
+                'ESCROW': 'ESC',
+                'SETTLEMENT_CLEARING': 'CLR'
+            }
+            prefix = prefix_map.get(account_type, 'ACT')
+            acc_num = f"BV-{prefix}-{random.randint(100000, 999999)}"
+
+            with db_lock:
+                new_acc = {
+                    'id': f'acc-{int(time.time() * 1000)}',
+                    'userId': current_user['id'],
+                    'accountNumber': acc_num,
+                    'name': account_name,
+                    'type': account_type,
+                    'balance': init_bal,
+                    'currency': 'USD',
+                    'status': 'ACTIVE',
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['accounts'].append(new_acc)
+
+                if init_bal > 0:
+                    ref = f"DEP-INIT-{acc_num}"
+                    debit_entry = {
+                        'id': f'led-{len(DB["ledgerEntries"]) + 1}',
+                        'transactionRef': ref,
+                        'accountId': 'acc-clearing-ext',
+                        'accountNumber': 'BV-EXT-CLEARING',
+                        'type': 'DEBIT',
+                        'amount': init_bal,
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    credit_entry = {
+                        'id': f'led-{len(DB["ledgerEntries"]) + 2}',
+                        'transactionRef': ref,
+                        'accountId': new_acc['id'],
+                        'accountNumber': new_acc['accountNumber'],
+                        'type': 'CREDIT',
+                        'amount': init_bal,
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    DB['ledgerEntries'].extend([debit_entry, credit_entry])
+
+                    new_txn = {
+                        'id': f'txn-{len(DB["transactions"]) + 1}',
+                        'referenceNumber': ref,
+                        'type': 'DEPOSIT',
+                        'amount': init_bal,
+                        'currency': 'USD',
+                        'status': 'COMPLETED',
+                        'description': f'Initial opening balance deposit for {account_name}',
+                        'sourceAccount': None,
+                        'destinationAccount': {'accountNumber': new_acc['accountNumber'], 'name': new_acc['name']},
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    DB['transactions'].insert(0, new_txn)
+
+                DB['accountPermissions'][(current_user['id'], new_acc['id'])] = {
+                    'canView': True,
+                    'canDeposit': True,
+                    'canWithdraw': True,
+                    'canTransfer': True
+                }
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ACCOUNT_CREATED',
+                    'status': 'SUCCESS',
+                    'resource': 'ACCOUNT',
+                    'user': {'email': current_user['email'], 'fullName': current_user.get('fullName', '')},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {
+                        'accountId': new_acc['id'],
+                        'accountNumber': new_acc['accountNumber'],
+                        'type': new_acc['type'],
+                        'initialBalance': init_bal
+                    },
+                    'createdAt': get_utc_now().isoformat()
+                })
+
+                self._send_json(201, {
+                    'success': True,
+                    'message': 'Account opened successfully with atomic double-entry verification.',
+                    'account': new_acc
+                })
+                return
 
         # 6. FINANCIAL TRANSACTION: DEPOSIT (DOUBLE-ENTRY + IDEMPOTENCY)
         if path == '/api/transactions/deposit':

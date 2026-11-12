@@ -1,9 +1,10 @@
 import { Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { AccountType, AccountStatus, Role } from '@prisma/client';
+import { AccountType, AccountStatus, Role, TransactionType, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { AuthenticatedRequest } from '../types/index.js';
 import { AuditService } from '../services/audit.service.js';
+import { LedgerService } from '../services/ledger.service.js';
 
 const createAccountSchema = z.object({
   name: z.string().min(2, 'Account name must be at least 2 characters'),
@@ -91,6 +92,20 @@ export class AccountController {
         return;
       }
 
+      // Privileged institutional account types require ADMIN role
+      if (
+        (data.type === AccountType.ESCROW ||
+          data.type === AccountType.TREASURY ||
+          data.type === AccountType.SETTLEMENT_CLEARING) &&
+        req.user!.role !== Role.ADMIN
+      ) {
+        res.status(403).json({
+          success: false,
+          message: `Permission denied: Opening an ${data.type} account requires ADMIN privileges.`,
+        });
+        return;
+      }
+
       const typePrefixMap: Record<AccountType, string> = {
         CHECKING: 'CHK',
         SAVINGS: 'SAV',
@@ -103,7 +118,7 @@ export class AccountController {
       const prefix = typePrefixMap[data.type] || 'ACT';
       const accountNumber = `BV-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
 
-      // Atomic creation of account and owner permissions
+      // Atomic creation of account, owner permissions, and initial double-entry ledger entries
       const newAccount = await prisma.$transaction(async (tx) => {
         const account = await tx.account.create({
           data: {
@@ -127,6 +142,31 @@ export class AccountController {
             canTransfer: true,
           },
         });
+
+        // Atomically post double-entry ledger entries if initial balance is provided
+        if (data.initialBalance > 0) {
+          const decAmount = new Prisma.Decimal(data.initialBalance);
+          const txn = await tx.transaction.create({
+            data: {
+              referenceNumber: `DEP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+              type: TransactionType.DEPOSIT,
+              amount: decAmount,
+              currency: data.currency,
+              status: 'COMPLETED',
+              description: `Initial opening balance deposit for ${data.name}`,
+              destinationAccountId: account.id,
+            },
+          });
+
+          await LedgerService.postDoubleEntry(
+            tx,
+            txn.id,
+            TransactionType.DEPOSIT,
+            decAmount,
+            null,
+            account.id
+          );
+        }
 
         return account;
       });

@@ -50,6 +50,53 @@ interface Transaction {
   createdAt: string;
 }
 
+const JWT_SECRET = process.env.JWT_SECRET || 'bv_prod_jwt_secret_key_84920485910293847582910293847501';
+
+// Cryptographic RFC 7519 JWT signing (Stateless across Vercel microVMs)
+function signJwt(payload: { userId: string; email: string; role: 'ADMIN' | 'ACCOUNT_HOLDER' | 'AUDITOR' }): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload = {
+    ...payload,
+    iat: now,
+    exp: now + 24 * 60 * 60, // 24 hours
+  };
+  const body = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(`${header}.${body}`)
+    .digest('base64url');
+  return `${header}.${body}.${signature}`;
+}
+
+// Cryptographic RFC 7519 JWT verification
+function verifyJwt(token: string): { userId: string; email: string; role: 'ADMIN' | 'ACCOUNT_HOLDER' | 'AUDITOR' } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [headerB64, bodyB64, sigB64] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', JWT_SECRET)
+      .update(`${headerB64}.${bodyB64}`)
+      .digest('base64url');
+
+    const sigBuf = Buffer.from(sigB64);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+
+    const payload = JSON.parse(Buffer.from(bodyB64, 'base64url').toString('utf-8'));
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < now) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 function hashPassword(password: string, saltHex?: string): { hash: string; salt: string } {
   const salt = saltHex ? Buffer.from(saltHex, 'hex') : crypto.randomBytes(16);
   const hash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
@@ -314,11 +361,40 @@ export default async function handler(req: any, res: any) {
     } catch {}
   }
 
-  // Session resolution
+  // Cryptographic Stateless Session Resolution (Verifies Signed JWT, then falls back to session map)
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-  const currentUserId = token ? state.sessions.get(token) : null;
-  const currentUser = currentUserId ? state.users.find((u) => u.id === currentUserId) : null;
+
+  let currentUser: User | null = null;
+  if (token) {
+    const verifiedPayload = verifyJwt(token);
+    if (verifiedPayload) {
+      currentUser =
+        state.users.find((u) => u.id === verifiedPayload.userId || u.email === verifiedPayload.email) || null;
+      if (!currentUser) {
+        // Hydrate verified user claims if spawned across cold instances
+        currentUser = {
+          id: verifiedPayload.userId,
+          email: verifiedPayload.email,
+          fullName: verifiedPayload.email.split('@')[0],
+          role: verifiedPayload.role,
+          passwordHash: '',
+          passwordSalt: '',
+          isActive: true,
+          failedAttempts: 0,
+          lockoutUntil: null,
+          mfaEnabled: false,
+          createdAt: new Date().toISOString(),
+        };
+        state.users.push(currentUser);
+      }
+    } else {
+      const sessionId = state.sessions.get(token);
+      if (sessionId) {
+        currentUser = state.users.find((u) => u.id === sessionId) || null;
+      }
+    }
+  }
 
   // 1. Health Probe
   if (path === '/api/health') {
@@ -380,13 +456,15 @@ export default async function handler(req: any, res: any) {
 
     user.failedAttempts = 0;
     user.lockoutUntil = null;
-    const newToken = `bv-sec-${crypto.randomBytes(24).toString('base64url')}`;
-    state.sessions.set(newToken, user.id);
+
+    // Issue cryptographically signed stateless JWT
+    const jwtToken = signJwt({ userId: user.id, email: user.email, role: user.role });
+    state.sessions.set(jwtToken, user.id);
 
     return res.status(200).json({
       success: true,
       message: 'Authentication successful.',
-      token: newToken,
+      token: jwtToken,
       user: {
         id: user.id,
         email: user.email,
@@ -467,13 +545,13 @@ export default async function handler(req: any, res: any) {
       );
     }
 
-    const token = `bv-sec-${crypto.randomBytes(24).toString('base64url')}`;
-    state.sessions.set(token, newUser.id);
+    const jwtToken = signJwt({ userId: newUser.id, email: newUser.email, role: newUser.role });
+    state.sessions.set(jwtToken, newUser.id);
 
     return res.status(201).json({
       success: true,
       message: 'Account registration completed successfully.',
-      token,
+      token: jwtToken,
       user: {
         id: newUser.id,
         email: newUser.email,
@@ -487,7 +565,10 @@ export default async function handler(req: any, res: any) {
   // 5. Auth: Me
   if (path === '/api/auth/me' && req.method === 'GET') {
     if (!currentUser) {
-      return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized. Authentication token is missing or expired. Please sign in.',
+      });
     }
     return res.status(200).json({
       success: true,
@@ -510,7 +591,12 @@ export default async function handler(req: any, res: any) {
   // 7. Accounts List and Creation
   if (path === '/api/accounts') {
     if (req.method === 'GET') {
-      if (!currentUser) return res.status(401).json({ success: false, message: 'Unauthorized.' });
+      if (!currentUser) {
+        return res.status(401).json({
+          success: false,
+          message: 'Unauthorized. Authentication token is missing or expired.',
+        });
+      }
       const accs =
         currentUser.role === 'ADMIN' || currentUser.role === 'AUDITOR'
           ? state.accounts
@@ -519,23 +605,121 @@ export default async function handler(req: any, res: any) {
     }
 
     if (req.method === 'POST') {
-      if (!currentUser) return res.status(401).json({ success: false, message: 'Unauthorized.' });
+      if (!currentUser) {
+        return res.status(401).json({
+          success: false,
+          message: 'Unauthorized. Authentication token is missing, invalid, or expired. Please sign in.',
+        });
+      }
+
+      // Check AUDITOR role: strictly read-only
+      if (currentUser.role === 'AUDITOR') {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission denied: Auditor is strictly read-only and cannot open new accounts.',
+        });
+      }
+
       const { name, type, initialBalance } = body;
+      const accountName = String(name || '').trim();
+      const accountType = String(type || 'CHECKING').toUpperCase().trim();
       const initBal = parseFloat(initialBalance) || 0;
-      const accNum = `BV-${(type || 'CHK').toUpperCase().slice(0, 3)}-${Math.floor(100000 + Math.random() * 900000)}`;
+
+      if (accountName.length < 2) {
+        return res.status(400).json({ success: false, message: 'Account name must be at least 2 characters.' });
+      }
+
+      if (initBal < 0) {
+        return res.status(400).json({ success: false, message: 'Initial balance cannot be negative.' });
+      }
+
+      // Privileged institutional account types require ADMIN role
+      if (
+        (accountType === 'ESCROW' || accountType === 'TREASURY' || accountType === 'SETTLEMENT_CLEARING') &&
+        currentUser.role !== 'ADMIN'
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: `Permission denied: Opening an ${accountType} account requires ADMIN privileges.`,
+        });
+      }
+
+      const prefixMap: Record<string, string> = {
+        CHECKING: 'CHK',
+        SAVINGS: 'SAV',
+        INVESTMENT: 'INV',
+        TREASURY: 'TRS',
+        ESCROW: 'ESC',
+        SETTLEMENT_CLEARING: 'CLR',
+      };
+      const prefix = prefixMap[accountType] || 'ACT';
+      const accNum = `BV-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+
       const newAcc: Account = {
         id: `acc-${Date.now()}`,
-        userId: currentUser.id,
+        userId: currentUser.id, // Strictly derived from authenticated JWT claims
         accountNumber: accNum,
-        name: name || 'Primary Checking',
-        type: type || 'CHECKING',
+        name: accountName,
+        type: accountType,
         balance: initBal,
         currency: 'USD',
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
       };
       state.accounts.push(newAcc);
-      return res.status(201).json({ success: true, account: newAcc });
+
+      // Atomically record paired double-entry ledger entries for opening balance
+      if (initBal > 0) {
+        const ref = `INIT-DEP-${accNum}`;
+        const debitEntry: LedgerEntry = {
+          id: `led-${state.ledgerEntries.length + 1}`,
+          transactionRef: ref,
+          accountId: 'acc-clearing-ext',
+          accountNumber: 'BV-EXT-CLEARING',
+          type: 'DEBIT',
+          amount: initBal,
+          createdAt: new Date().toISOString(),
+        };
+        const creditEntry: LedgerEntry = {
+          id: `led-${state.ledgerEntries.length + 2}`,
+          transactionRef: ref,
+          accountId: newAcc.id,
+          accountNumber: newAcc.accountNumber,
+          type: 'CREDIT',
+          amount: initBal,
+          createdAt: new Date().toISOString(),
+        };
+        state.ledgerEntries.push(debitEntry, creditEntry);
+
+        const newTxn: Transaction = {
+          id: `txn-${state.transactions.length + 1}`,
+          referenceNumber: ref,
+          type: 'DEPOSIT',
+          amount: initBal,
+          currency: 'USD',
+          status: 'COMPLETED',
+          description: `Initial opening balance deposit for ${accountName}`,
+          sourceAccount: null,
+          destinationAccount: { accountNumber: newAcc.accountNumber, name: newAcc.name },
+          createdAt: new Date().toISOString(),
+        };
+        state.transactions.unshift(newTxn);
+      }
+
+      state.auditLogs.unshift({
+        id: `aud-${state.auditLogs.length + 1}`,
+        action: 'ACCOUNT_CREATED',
+        userId: currentUser.id,
+        userEmail: currentUser.email,
+        details: `Account ${newAcc.accountNumber} (${newAcc.type}) created with balance $${initBal.toFixed(2)}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Account opened successfully with atomic double-entry verification.',
+        account: newAcc,
+      });
     }
   }
 
@@ -550,13 +734,23 @@ export default async function handler(req: any, res: any) {
 
   // 9. Transactions List
   if (path === '/api/transactions' && req.method === 'GET') {
-    if (!currentUser) return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    if (!currentUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized. Authentication token is missing or expired.',
+      });
+    }
     return res.status(200).json({ success: true, transactions: state.transactions });
   }
 
   // 10. Transfer with Atomic Double-Entry Ledger and Idempotency
   if (path === '/api/transactions/transfer' && req.method === 'POST') {
-    if (!currentUser) return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    if (!currentUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized. Authentication token is missing or expired.',
+      });
+    }
     if (currentUser.role === 'AUDITOR') {
       return res.status(403).json({ success: false, message: 'Forbidden: Auditor is strictly read-only.' });
     }
@@ -652,7 +846,12 @@ export default async function handler(req: any, res: any) {
 
   // 11. Deposit
   if (path === '/api/transactions/deposit' && req.method === 'POST') {
-    if (!currentUser) return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    if (!currentUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized. Authentication token is missing or expired.',
+      });
+    }
     const { accountId, amount, description } = body;
     const numAmount = parseFloat(amount);
     if (!numAmount || numAmount <= 0) {

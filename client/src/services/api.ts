@@ -35,7 +35,16 @@ export async function request<T = any>(
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const errorMsg = data?.message || `HTTP Error ${response.status}: ${response.statusText}`;
+    let errorMsg = data?.message;
+    if (!errorMsg) {
+      if (response.status === 401) {
+        errorMsg = 'Unauthorized: Your session has expired or is invalid. Please sign in again.';
+      } else if (response.status === 403) {
+        errorMsg = 'Forbidden: You do not have permission to perform this action.';
+      } else {
+        errorMsg = `HTTP Error ${response.status}: ${response.statusText}`;
+      }
+    }
     throw new Error(errorMsg);
   }
 
