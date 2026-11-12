@@ -5,6 +5,7 @@ import {
   Wallet,
   ArrowLeftRight,
   ShieldAlert,
+  ShieldCheck,
   Users,
   Cpu
 } from 'lucide-react';
@@ -61,6 +62,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
               Governance & RBAC
             </p>
             <nav className="space-y-1">
+              {isAdmin && (
+                <button
+                  onClick={() => onSelectTab('admin-security')}
+                  className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    currentTab === 'admin-security'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
+                  }`}
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="font-semibold text-emerald-300">Security Center (SOC)</span>
+                </button>
+              )}
+
               {isOperatorOrAdmin && (
                 <button
                   onClick={() => onSelectTab('admin-users')}
@@ -100,11 +115,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
           </span>
-          <span className="font-medium">Ledger Core Online</span>
+          <span className="font-medium">Cybersecurity Shield Active</span>
         </div>
         <div className="mt-2 text-[11px] text-slate-500 flex items-center space-x-1.5">
           <Cpu className="w-3.5 h-3.5" />
-          <span>PostgreSQL + Redis Guard</span>
+          <span>CSP • HSTS • Brute-Force Guard</span>
         </div>
       </div>
     </aside>

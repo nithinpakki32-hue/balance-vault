@@ -11,6 +11,7 @@ import { AccountsPage } from './pages/AccountsPage.js';
 import { TransactionsPage } from './pages/TransactionsPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
+import { AdminSecurityPage } from './pages/AdminSecurityPage.js';
 import { Account, Transaction } from './types/index.js';
 import { api } from './services/api.js';
 
@@ -46,7 +47,6 @@ const MainLayout: React.FC = () => {
   useEffect(() => {
     if (user) {
       loadData();
-      // Show onboarding if first visit
       const hasSeen = localStorage.getItem('bv_seen_onboarding');
       if (!hasSeen) {
         setIsOnboardingOpen(true);
@@ -104,6 +104,8 @@ const MainLayout: React.FC = () => {
               isLoading={isLoadingData}
             />
           )}
+
+          {currentTab === 'admin-security' && <AdminSecurityPage />}
 
           {currentTab === 'admin-audit' && <AdminAuditPage />}
 

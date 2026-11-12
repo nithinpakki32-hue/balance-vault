@@ -45,6 +45,10 @@ export const api = {
   // Auth
   register: (payload: any) => request('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload: any) => request('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: (payload: any) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
+  setupMfa: () => request('/auth/mfa/setup', { method: 'POST' }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
   getMe: () => request('/auth/me'),
 
   // Accounts
@@ -57,12 +61,13 @@ export const api = {
   deposit: (payload: any) => request('/transactions/deposit', { method: 'POST', body: JSON.stringify(payload) }),
   getTransactions: (page = 1, limit = 20) => request(`/transactions?page=${page}&limit=${limit}`),
 
-  // Admin
+  // Admin & SOC
   getUsers: (page = 1, limit = 20, search?: string) =>
     request(`/admin/users?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
   updateUser: (id: string, payload: any) => request(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   getAuditLogs: (page = 1, limit = 25, search?: string) =>
     request(`/admin/audit-logs?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
+  getSecurityStats: () => request('/admin/security-stats'),
 
   // Health
   getHealth: () => request('/health'),

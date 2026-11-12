@@ -16,4 +16,7 @@ router.patch('/users/:id', authorizeRoles(Role.ADMIN), AdminController.updateUse
 // Audit Log Viewer (Admin & Auditor access)
 router.get('/audit-logs', authorizeRoles(Role.ADMIN, Role.AUDITOR), AdminController.listAuditLogs);
 
+// Dedicated Security Operations Center (Admin only)
+router.get('/security-stats', authorizeRoles(Role.ADMIN), AdminController.getSecurityStats);
+
 export default router;

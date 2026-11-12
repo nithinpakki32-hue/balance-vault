@@ -1,5 +1,6 @@
 import { Response, NextFunction } from 'express';
 import { TokenService } from '../services/token.service.js';
+import { SecurityService } from '../services/security.service.js';
 import { prisma } from '../lib/prisma.js';
 import { AuthenticatedRequest } from '../types/index.js';
 
@@ -19,6 +20,16 @@ export async function authenticateToken(
     return;
   }
 
+  // Check if session token has been explicitly revoked / blacklisted
+  const isRevoked = await SecurityService.isTokenRevoked(token);
+  if (isRevoked) {
+    res.status(401).json({
+      success: false,
+      message: 'This session has been revoked. Please sign in again.',
+    });
+    return;
+  }
+
   try {
     const decoded = TokenService.verifyToken(token);
     const user = await prisma.user.findUnique({
@@ -29,6 +40,7 @@ export async function authenticateToken(
         fullName: true,
         role: true,
         isActive: true,
+        lockoutUntil: true,
       },
     });
 
@@ -44,6 +56,14 @@ export async function authenticateToken(
       res.status(403).json({
         success: false,
         message: 'This account has been deactivated. Please contact an administrator.',
+      });
+      return;
+    }
+
+    if (SecurityService.isAccountLocked(user.lockoutUntil)) {
+      res.status(423).json({
+        success: false,
+        message: 'This account is currently locked due to security protection.',
       });
       return;
     }

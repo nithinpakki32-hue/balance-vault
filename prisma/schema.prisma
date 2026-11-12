@@ -47,22 +47,56 @@ enum AuditStatus {
   WARNING
 }
 
-model User {
-  id                    String        @id @default(uuid())
-  email                 String        @unique
-  passwordHash          String
-  fullName              String
-  role                  Role          @default(USER)
-  isActive              Boolean       @default(true)
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
+enum SecuritySeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
 
-  accounts              Account[]
-  initiatedTransactions Transaction[] @relation("Initiator")
-  auditLogs             AuditLog[]
+enum SecurityEventType {
+  FAILED_LOGIN
+  ACCOUNT_LOCKED
+  BRUTE_FORCE_DETECTED
+  UNAUTHORIZED_ACCESS
+  RATE_LIMIT_VIOLATION
+  MFA_SETUP
+  MFA_FAILED
+  MFA_VERIFIED
+  PASSWORD_RESET_REQUEST
+  PASSWORD_RESET_SUCCESS
+  SESSION_REVOKED
+  SUSPICIOUS_IP_DETECTED
+}
+
+model User {
+  id                     String          @id @default(uuid())
+  email                  String          @unique
+  passwordHash           String
+  fullName               String
+  role                   Role            @default(USER)
+  isActive               Boolean         @default(true)
+  
+  // Cybersecurity & Brute-Force Protection
+  failedLoginAttempts    Int             @default(0)
+  lockoutUntil           DateTime?
+  mfaSecret              String?
+  mfaEnabled             Boolean         @default(false)
+  passwordResetToken     String?
+  passwordResetExpires   DateTime?
+
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  accounts               Account[]
+  initiatedTransactions  Transaction[]   @relation("Initiator")
+  auditLogs              AuditLog[]
+  securityEvents         SecurityEvent[]
 
   @@index([email])
   @@index([role])
+  @@index([lockoutUntil])
+  @@index([passwordResetToken])
 }
 
 model Account {
@@ -132,6 +166,25 @@ model AuditLog {
 
   @@index([action])
   @@index([resource])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id                    String            @id @default(uuid())
+  eventType             SecurityEventType
+  severity              SecuritySeverity  @default(LOW)
+  details               String
+  userId                String?
+  user                  User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ipAddress             String?
+  userAgent             String?
+  metadata              Json?
+  resolved              Boolean           @default(false)
+  createdAt             DateTime          @default(now())
+
+  @@index([eventType])
+  @@index([severity])
   @@index([userId])
   @@index([createdAt])
 }

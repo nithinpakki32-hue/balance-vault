@@ -2,6 +2,7 @@ import rateLimit, { Options } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { redisClient, isRedisConnected } from '../config/redis.js';
 import { config } from '../config/env.js';
+import { SecurityService } from '../services/security.service.js';
 
 function createLimiter(windowMs: number, max: number, message: string) {
   const options: Partial<Options> = {
@@ -9,10 +10,13 @@ function createLimiter(windowMs: number, max: number, message: string) {
     max,
     standardHeaders: true,
     legacyHeaders: false,
-    message: {
-      success: false,
-      message,
-      retryAfterMs: windowMs,
+    handler: (req, res) => {
+      SecurityService.recordRateLimitViolation(req.ip || req.socket.remoteAddress, req.originalUrl);
+      res.status(429).json({
+        success: false,
+        message,
+        retryAfterSeconds: Math.ceil(windowMs / 1000),
+      });
     },
   };
 

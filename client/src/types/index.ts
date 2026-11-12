@@ -10,12 +10,17 @@ export type TransactionStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'REVERSED';
 
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'WARNING';
 
+export type SecuritySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
 export interface User {
   id: string;
   email: string;
   fullName: string;
   role: Role;
   isActive: boolean;
+  failedLoginAttempts?: number;
+  lockoutUntil?: string | null;
+  mfaEnabled?: boolean;
   createdAt?: string;
   _count?: {
     accounts: number;
@@ -70,4 +75,25 @@ export interface AuditLog {
   status: AuditStatus;
   metadata?: any;
   createdAt: string;
+}
+
+export interface SecurityEvent {
+  id: string;
+  eventType: string;
+  severity: SecuritySeverity;
+  details: string;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+}
+
+export interface SecurityStats {
+  totalFailedLogins: number;
+  lockedAccounts: number;
+  unauthorizedAttempts: number;
+  rateLimitViolations: number;
+  securityAlerts: Array<{ level: string; message: string }>;
+  lastSecurityAuditDate: string;
+  complianceStatus: string;
+  recentSecurityEvents: SecurityEvent[];
 }

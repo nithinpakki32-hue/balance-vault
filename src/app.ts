@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { config } from './config/env.js';
 import { apiRateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { applySecurityHeaders } from './middleware/securityHeaders.js';
 
 import healthRoutes from './routes/health.routes.js';
 import authRoutes from './routes/auth.routes.js';
@@ -14,22 +15,43 @@ import adminRoutes from './routes/admin.routes.js';
 export function createApp(): Express {
   const app = express();
 
-  // Security Middleware
-  app.use(helmet());
+  // 1. Comprehensive Security Headers
+  app.use(applySecurityHeaders);
+  app.use(helmet({
+    contentSecurityPolicy: false, // Handled with granular rules in applySecurityHeaders
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // 2. Strict CORS Policy
+  const allowedOrigins = [
+    config.clientUrl,
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+  ];
+
   app.use(
     cors({
-      origin: [config.clientUrl, 'http://localhost:5173', 'http://localhost:3000'],
+      origin: (origin, callback) => {
+        // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Blocked by CORS policy: Unauthorized origin.'));
+        }
+      },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     })
   );
 
-  // Body Parsing
-  app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+  // 3. Body Parsing with Strict Payload Limits to defend against DOS
+  app.use(express.json({ limit: '100kb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 
-  // Basic Request Logging
+  // 4. Sanitized Request Logging (Passwords, tokens, and PII are never logged)
   app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
@@ -61,7 +83,7 @@ export function createApp(): Express {
     });
   });
 
-  // Centralized Error Handler
+  // Centralized Error Handler (suppresses stack traces in non-development)
   app.use(errorHandler);
 
   return app;
