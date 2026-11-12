@@ -9,6 +9,7 @@ const envSchema = z.object({
   CLIENT_URL: z.string().default('http://localhost:5173'),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  DIRECT_URL: z.string().optional(),
 
   // JWT Secret Configuration - supports both JWT_SECRET and JWT_ACCESS_SECRET
   JWT_SECRET: z.string().optional(),
@@ -69,6 +70,7 @@ export const config = {
   nodeEnv: rawConfig.NODE_ENV,
   clientUrl: rawConfig.CLIENT_URL,
   databaseUrl: rawConfig.DATABASE_URL,
+  directUrl: rawConfig.DIRECT_URL,
 
   redis: {
     host: rawConfig.REDIS_HOST,
