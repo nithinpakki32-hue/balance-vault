@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "buildCommand": "npx prisma generate && npm run --prefix client build",
+  "buildCommand": "npm run --prefix client build",
   "outputDirectory": "client/dist",
   "rewrites": [
     {
