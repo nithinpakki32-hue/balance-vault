@@ -19,7 +19,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
   const isAuditorOrAdmin = user?.role === 'ADMIN' || user?.role === 'AUDITOR';
-  const isOperatorOrAdmin = user?.role === 'ADMIN' || user?.role === 'OPERATOR';
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -56,7 +55,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
           </nav>
         </div>
 
-        {(isAuditorOrAdmin || isOperatorOrAdmin) && (
+        {isAuditorOrAdmin && (
           <div>
             <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-3 mb-2">
               Governance & RBAC
@@ -76,7 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
                 </button>
               )}
 
-              {isOperatorOrAdmin && (
+              {isAdmin && (
                 <button
                   onClick={() => onSelectTab('admin-users')}
                   className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
