@@ -248,14 +248,27 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-| Variable | Description | Default |
+| Variable | Description | Default / Example |
 |---|---|---|
-| `PORT` | Backend server port | `8000` |
-| `NODE_ENV` | Application environment | `production` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://...` |
+| `PORT` | Backend server port | `5000` |
+| `NODE_ENV` | Application environment (`development` / `production`) | `production` |
+| `DATABASE_URL` | Supabase Supavisor Transaction Pooler (`:6543`) | `postgresql://<user>.<ref>:<pass>@aws-0-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true` |
+| `DIRECT_URL` | Supabase Direct Connection for Prisma Migrations (`:5432`) | `postgresql://<user>:<pass>@db.<ref>.supabase.co:5432/postgres` |
 | `REDIS_URL` | Redis / Upstash connection URL | `rediss://...` |
 | `JWT_SECRET` | Secret key for JWT signing | `(32+ char secret string)` |
-| `BOOTSTRAP_SECRET` | Secret key for initial admin bootstrap | `(secure token)` |
+| `ADMIN_BOOTSTRAP_SECRET` | Secret key for initial admin bootstrap | `(16+ char secret token)` |
+
+---
+
+## 🗄️ Supabase Cloud Database Architecture
+
+BalanceVault connects to **Supabase PostgreSQL 17** with dual connection endpoints:
+
+1. **Transaction Pooler (Supavisor - Port 6543):** Set as `DATABASE_URL` with `?pgbouncer=true`. Provides connection pooling for high-concurrency Node.js serverless and API executions.
+2. **Direct TCP Connection (Port 5432):** Set as `DIRECT_URL`. Used exclusively by Prisma CLI (`npx prisma migrate` and `npx prisma db push`) for transactional DDL schema updates.
+3. **Row Level Security (RLS) & Role Isolation:**
+   - All 8 application tables (`User`, `Account`, `AccountPermission`, `Transaction`, `LedgerEntry`, `IdempotencyRecord`, `AuditLog`, `SecurityEvent`) have **Row Level Security (RLS) enabled** to block unauthorized external anonymous PostgREST scraping.
+   - The application connects via a dedicated non-superuser role (`bv_app_user`) equipped with `BYPASSRLS` privileges for internal application data integrity.
 
 ---
 
