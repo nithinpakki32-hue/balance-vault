@@ -4,6 +4,8 @@ export type AccountType = 'CHECKING' | 'SAVINGS' | 'INVESTMENT' | 'TREASURY' | '
 
 export type AccountStatus = 'ACTIVE' | 'FROZEN' | 'CLOSED';
 
+export type AccountRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER';
 
 export type TransactionStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'REVERSED';
@@ -107,4 +109,33 @@ export interface SecurityStats {
   lastSecurityAuditDate: string;
   complianceStatus: string;
   recentSecurityEvents: SecurityEvent[];
+}
+
+export interface AccountRequest {
+  id: string;
+  userId: string;
+  user?: {
+    id: string;
+    email: string;
+    fullName: string;
+    role?: Role;
+  };
+  accountName: string;
+  accountType: AccountType;
+  requestedBalance: string | number;
+  currency: string;
+  reason?: string;
+  status: AccountRequestStatus;
+  adminRemarks?: string | null;
+  reviewedById?: string | null;
+  reviewedBy?: {
+    id: string;
+    email: string;
+    fullName: string;
+  } | null;
+  reviewedAt?: string | null;
+  createdAccountId?: string | null;
+  createdAccount?: Account | null;
+  createdAt: string;
+  updatedAt: string;
 }

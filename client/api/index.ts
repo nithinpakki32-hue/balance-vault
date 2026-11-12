@@ -50,6 +50,25 @@ interface Transaction {
   createdAt: string;
 }
 
+interface AccountRequest {
+  id: string;
+  userId: string;
+  accountName: string;
+  accountType: string;
+  requestedBalance: number;
+  currency: string;
+  reason?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  adminRemarks?: string | null;
+  reviewedById?: string | null;
+  reviewedAt?: string | null;
+  createdAccountId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  user?: { id: string; email: string; fullName: string; role: string };
+  reviewedBy?: { id: string; email: string; fullName: string } | null;
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || 'bv_prod_jwt_secret_key_84920485910293847582910293847501';
 
 // Cryptographic RFC 7519 JWT signing (Stateless across Vercel microVMs)
@@ -136,6 +155,7 @@ interface GlobalState {
   accounts: Account[];
   transactions: Transaction[];
   ledgerEntries: LedgerEntry[];
+  accountRequests: AccountRequest[];
   auditLogs: any[];
   sessions: Map<string, string>;
   idempotencyRecords: Map<string, { hash: string; status: number; body: any }>;
@@ -302,6 +322,7 @@ function getOrInitState(): GlobalState {
         timestamp: new Date().toISOString(),
       },
     ],
+    accountRequests: [],
     sessions: new Map<string, string>(),
     idempotencyRecords: new Map<string, { hash: string; status: number; body: any }>(),
   };
@@ -612,11 +633,15 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      // Check AUDITOR role: strictly read-only
-      if (currentUser.role === 'AUDITOR') {
+      // Direct account creation is strictly restricted to ADMIN.
+      // Account holders must submit an account request via /api/account-requests.
+      if (currentUser.role !== 'ADMIN') {
         return res.status(403).json({
           success: false,
-          message: 'Permission denied: Auditor is strictly read-only and cannot open new accounts.',
+          message:
+            currentUser.role === 'AUDITOR'
+              ? 'Permission denied: Auditor is strictly read-only and cannot open new accounts.'
+              : 'Direct account creation is restricted to administrators. Please submit an account request via /api/account-requests.',
         });
       }
 
@@ -730,6 +755,261 @@ export default async function handler(req: any, res: any) {
     const acc = state.accounts.find((a) => a.id === accId || a.accountNumber === accId);
     if (!acc) return res.status(404).json({ success: false, message: 'Account not found.' });
     return res.status(200).json({ success: true, account: acc });
+  }
+
+  // Account Requests Workflow
+  if (path === '/api/account-requests') {
+    if (!currentUser) {
+      return res.status(401).json({ success: false, message: 'Unauthorized. Authentication token is missing or expired.' });
+    }
+
+    if (req.method === 'GET') {
+      const isPrivileged = currentUser.role === 'ADMIN' || currentUser.role === 'AUDITOR';
+      const rawRequests = isPrivileged
+        ? state.accountRequests
+        : state.accountRequests.filter((r) => r.userId === currentUser.id);
+
+      // Hydrate applicant and reviewer details
+      const populatedRequests = rawRequests.map((r) => {
+        const applicant = state.users.find((u) => u.id === r.userId);
+        const reviewer = r.reviewedById ? state.users.find((u) => u.id === r.reviewedById) : null;
+        const acc = r.createdAccountId ? state.accounts.find((a) => a.id === r.createdAccountId) : null;
+        return {
+          ...r,
+          user: applicant ? { id: applicant.id, email: applicant.email, fullName: applicant.fullName, role: applicant.role } : undefined,
+          reviewedBy: reviewer ? { id: reviewer.id, email: reviewer.email, fullName: reviewer.fullName } : null,
+          createdAccount: acc || undefined,
+        };
+      });
+
+      return res.status(200).json({ success: true, requests: populatedRequests });
+    }
+
+    if (req.method === 'POST') {
+      if (currentUser.role === 'AUDITOR') {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission denied: Auditor is strictly read-only and cannot submit account requests.',
+        });
+      }
+
+      const { accountName, accountType = 'CHECKING', requestedBalance = 0, currency = 'USD', reason } = body;
+      const cleanName = String(accountName || '').trim();
+      const cleanType = String(accountType).toUpperCase().trim();
+      const numBal = parseFloat(requestedBalance) || 0;
+
+      if (cleanName.length < 2) {
+        return res.status(400).json({ success: false, message: 'Account name must be at least 2 characters.' });
+      }
+      if (numBal < 0) {
+        return res.status(400).json({ success: false, message: 'Requested opening balance cannot be negative.' });
+      }
+
+      const newReq: AccountRequest = {
+        id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        userId: currentUser.id,
+        accountName: cleanName,
+        accountType: cleanType,
+        requestedBalance: numBal,
+        currency: currency || 'USD',
+        reason: reason ? String(reason).trim() : '',
+        status: 'PENDING',
+        adminRemarks: null,
+        reviewedById: null,
+        reviewedAt: null,
+        createdAccountId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      state.accountRequests.unshift(newReq);
+
+      state.auditLogs.unshift({
+        id: `aud-${state.auditLogs.length + 1}`,
+        action: 'ACCOUNT_REQUEST_CREATED',
+        userId: currentUser.id,
+        userEmail: currentUser.email,
+        details: `Account request submitted for ${cleanName} (${cleanType}) requesting $${numBal.toFixed(2)}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Account opening request submitted successfully. Awaiting administrator review.',
+        request: newReq,
+      });
+    }
+  }
+
+  // Account Request Review Actions (Approve / Reject)
+  const reqActionMatch = path.match(/^\/api\/account-requests\/([a-zA-Z0-9_-]+)\/(approve|reject)$/);
+  if (reqActionMatch && req.method === 'POST') {
+    if (!currentUser) {
+      return res.status(401).json({ success: false, message: 'Unauthorized. Authentication token is missing or expired.' });
+    }
+    if (currentUser.role !== 'ADMIN') {
+      return res.status(403).json({
+        success: false,
+        message: 'Permission denied: Only administrators can review account requests.',
+      });
+    }
+
+    const reqId = reqActionMatch[1];
+    const action = reqActionMatch[2];
+    const targetReq = state.accountRequests.find((r) => r.id === reqId);
+
+    if (!targetReq) {
+      return res.status(404).json({ success: false, message: 'Account request not found.' });
+    }
+
+    if (action === 'approve') {
+      // Self-approval prohibition
+      if (targetReq.userId === currentUser.id) {
+        return res.status(403).json({
+          success: false,
+          message: 'Self-approval prohibited: Administrators cannot approve their own account requests.',
+        });
+      }
+
+      if (targetReq.status !== 'PENDING') {
+        return res.status(409).json({
+          success: false,
+          message: `Cannot approve request: Request is already ${targetReq.status}.`,
+        });
+      }
+
+      const prefixMap: Record<string, string> = {
+        CHECKING: 'CHK',
+        SAVINGS: 'SAV',
+        INVESTMENT: 'INV',
+        TREASURY: 'TRS',
+        ESCROW: 'ESC',
+        SETTLEMENT_CLEARING: 'CLR',
+      };
+      const prefix = prefixMap[targetReq.accountType] || 'ACT';
+      const accNum = `BV-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+
+      const newAcc: Account = {
+        id: `acc-${Date.now()}`,
+        userId: targetReq.userId,
+        accountNumber: accNum,
+        name: targetReq.accountName,
+        type: targetReq.accountType,
+        balance: targetReq.requestedBalance,
+        currency: targetReq.currency,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+      };
+      state.accounts.push(newAcc);
+
+      if (targetReq.requestedBalance > 0) {
+        const ref = `INIT-DEP-${accNum}`;
+        state.ledgerEntries.push(
+          {
+            id: `led-${state.ledgerEntries.length + 1}`,
+            transactionRef: ref,
+            accountId: 'acc-clearing-ext',
+            accountNumber: 'BV-EXT-CLEARING',
+            type: 'DEBIT',
+            amount: targetReq.requestedBalance,
+            createdAt: new Date().toISOString(),
+          },
+          {
+            id: `led-${state.ledgerEntries.length + 2}`,
+            transactionRef: ref,
+            accountId: newAcc.id,
+            accountNumber: newAcc.accountNumber,
+            type: 'CREDIT',
+            amount: targetReq.requestedBalance,
+            createdAt: new Date().toISOString(),
+          }
+        );
+
+        state.transactions.unshift({
+          id: `txn-${state.transactions.length + 1}`,
+          referenceNumber: ref,
+          type: 'DEPOSIT',
+          amount: targetReq.requestedBalance,
+          currency: targetReq.currency,
+          status: 'COMPLETED',
+          description: `Initial opening balance deposit for approved account ${newAcc.name}`,
+          sourceAccount: null,
+          destinationAccount: { accountNumber: newAcc.accountNumber, name: newAcc.name },
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      targetReq.status = 'APPROVED';
+      targetReq.adminRemarks = body.remarks || 'Approved by administrator';
+      targetReq.reviewedById = currentUser.id;
+      targetReq.reviewedAt = new Date().toISOString();
+      targetReq.createdAccountId = newAcc.id;
+      targetReq.updatedAt = new Date().toISOString();
+
+      state.auditLogs.unshift({
+        id: `aud-${state.auditLogs.length + 1}`,
+        action: 'ACCOUNT_REQUEST_APPROVED',
+        userId: currentUser.id,
+        userEmail: currentUser.email,
+        details: `Approved account request ${targetReq.id}. Created account ${newAcc.accountNumber} with $${newAcc.balance.toFixed(2)}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Account request successfully approved and vault account created.',
+        request: targetReq,
+        account: newAcc,
+      });
+    }
+
+    if (action === 'reject') {
+      if (targetReq.status !== 'PENDING') {
+        return res.status(409).json({
+          success: false,
+          message: `Cannot reject request: Request is already ${targetReq.status}.`,
+        });
+      }
+
+      targetReq.status = 'REJECTED';
+      targetReq.adminRemarks = body.remarks || 'Rejected by administrator';
+      targetReq.reviewedById = currentUser.id;
+      targetReq.reviewedAt = new Date().toISOString();
+      targetReq.updatedAt = new Date().toISOString();
+
+      state.auditLogs.unshift({
+        id: `aud-${state.auditLogs.length + 1}`,
+        action: 'ACCOUNT_REQUEST_REJECTED',
+        userId: currentUser.id,
+        userEmail: currentUser.email,
+        details: `Rejected account request ${targetReq.id}. Reason: ${targetReq.adminRemarks}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Account request has been rejected.',
+        request: targetReq,
+      });
+    }
+  }
+
+  // Single Account Request by ID
+  const singleReqMatch = path.match(/^\/api\/account-requests\/([a-zA-Z0-9_-]+)$/);
+  if (singleReqMatch && req.method === 'GET') {
+    if (!currentUser) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
+    const reqId = singleReqMatch[1];
+    const targetReq = state.accountRequests.find((r) => r.id === reqId);
+    if (!targetReq) {
+      return res.status(404).json({ success: false, message: 'Account request not found.' });
+    }
+    const isPrivileged = currentUser.role === 'ADMIN' || currentUser.role === 'AUDITOR';
+    if (!isPrivileged && targetReq.userId !== currentUser.id) {
+      return res.status(403).json({ success: false, message: 'Access denied: You can only view your own account requests.' });
+    }
+    return res.status(200).json({ success: true, request: targetReq });
   }
 
   // 9. Transactions List

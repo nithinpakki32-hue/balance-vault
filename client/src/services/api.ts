@@ -67,6 +67,16 @@ export const api = {
   createAccount: (payload: any) => request('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
   getAccount: (id: string) => request(`/accounts/${id}`),
 
+  // Account Requests Workflow
+  requestAccount: (payload: { accountName: string; accountType: string; requestedBalance: number; currency?: string; reason?: string }) =>
+    request('/account-requests', { method: 'POST', body: JSON.stringify(payload) }),
+  getAccountRequests: () => request('/account-requests'),
+  getAccountRequestById: (id: string) => request(`/account-requests/${id}`),
+  approveAccountRequest: (id: string, payload?: { remarks?: string }) =>
+    request(`/account-requests/${id}/approve`, { method: 'POST', body: JSON.stringify(payload || {}) }),
+  rejectAccountRequest: (id: string, payload: { remarks?: string; reason?: string }) =>
+    request(`/account-requests/${id}/reject`, { method: 'POST', body: JSON.stringify(payload) }),
+
   // Transactions with Idempotency Key support
   transfer: (payload: any, idempotencyKey?: string) =>
     request('/transactions/transfer', {

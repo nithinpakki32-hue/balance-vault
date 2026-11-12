@@ -85,7 +85,7 @@ class AccountCreationSecurityTests(unittest.TestCase):
             self.assertAlmostEqual(ledger_data['totalDebits'], ledger_data['totalCredits'], places=2)
 
     def test_02_account_holder_cannot_open_escrow_account(self):
-        """Regular ACCOUNT_HOLDER cannot open institutional ESCROW accounts (HTTP 403)."""
+        """Regular ACCOUNT_HOLDER cannot directly create accounts (HTTP 403)."""
         payload = {
             'name': 'unauthorized escrow',
             'type': 'ESCROW',
@@ -100,7 +100,7 @@ class AccountCreationSecurityTests(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(ctx.exception.code, 403)
         body = json.loads(ctx.exception.read().decode())
-        self.assertIn('ADMIN privileges', body['message'])
+        self.assertIn('Direct account creation is restricted to administrators', body['message'])
 
     def test_03_auditor_is_strictly_read_only_and_cannot_open_account(self):
         """Auditor cannot open any account (HTTP 403)."""
@@ -142,24 +142,40 @@ class AccountCreationSecurityTests(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(ctx.exception.code, 401)
 
-    def test_06_account_holder_can_open_standard_checking_account(self):
-        """Legitimate ACCOUNT_HOLDER can open a standard CHECKING account."""
+    def test_06_account_holder_must_use_account_request_workflow(self):
+        """ACCOUNT_HOLDER cannot directly create checking accounts; must submit request via /api/account-requests."""
         payload = {
             'name': "Alex's Travel Vault",
             'type': 'CHECKING',
             'initialBalance': 1500.00
         }
-        req = urllib.request.Request(
+        # Direct creation is blocked with 403
+        req_direct = urllib.request.Request(
             f'{BASE_URL}/api/accounts',
             data=json.dumps(payload).encode(),
             headers={'Authorization': f'Bearer {self.user_token}', 'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req) as resp:
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req_direct)
+        self.assertEqual(ctx.exception.code, 403)
+
+        # Request workflow succeeds
+        req_workflow = urllib.request.Request(
+            f'{BASE_URL}/api/account-requests',
+            data=json.dumps({
+                'accountName': "Alex's Travel Vault",
+                'accountType': 'CHECKING',
+                'requestedBalance': 1500.00,
+                'reason': 'Travel expense allocation.'
+            }).encode(),
+            headers={'Authorization': f'Bearer {self.user_token}', 'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req_workflow) as resp:
             self.assertEqual(resp.status, 201)
             data = json.loads(resp.read().decode())
             self.assertTrue(data['success'])
-            self.assertEqual(data['account']['userId'], self.user_id)
-            self.assertEqual(data['account']['type'], 'CHECKING')
+            self.assertEqual(data['request']['userId'], self.user_id)
+            self.assertEqual(data['request']['status'], 'PENDING')
 
 if __name__ == '__main__':
     unittest.main()

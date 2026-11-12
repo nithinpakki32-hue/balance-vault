@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Account } from '../types/index.js';
 import { api } from '../services/api.js';
+import { useAuth } from '../context/AuthContext.js';
 import { Wallet, Plus, Copy, Check, ArrowDownLeft, Shield } from 'lucide-react';
 
 interface AccountsPageProps {
@@ -14,6 +15,9 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
   onOpenCreateAccount,
   onRefresh,
 }) => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
+
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [depositModalAccount, setDepositModalAccount] = useState<Account | null>(null);
   const [depositAmount, setDepositAmount] = useState('500');
@@ -62,7 +66,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
           className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition-all shadow-sm shadow-cyan-500/20 flex items-center space-x-1.5 self-start sm:self-auto"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>New Account</span>
+          <span>{isAdmin ? 'New Account' : 'Request Account'}</span>
         </button>
       </div>
 

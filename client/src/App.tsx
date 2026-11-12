@@ -12,6 +12,7 @@ import { TransactionsPage } from './pages/TransactionsPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
 import { AdminSecurityPage } from './pages/AdminSecurityPage.js';
+import { AdminAccountRequestsPage } from './pages/AdminAccountRequestsPage.js';
 import { Account, Transaction } from './types/index.js';
 import { api } from './services/api.js';
 
@@ -106,6 +107,8 @@ const MainLayout: React.FC = () => {
           )}
 
           {currentTab === 'admin-security' && <AdminSecurityPage />}
+
+          {currentTab === 'admin-account-requests' && <AdminAccountRequestsPage />}
 
           {currentTab === 'admin-audit' && <AdminAuditPage />}
 

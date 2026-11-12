@@ -83,25 +83,15 @@ export class AccountController {
     try {
       const data = createAccountSchema.parse(req.body);
 
-      // AUDITOR role is strictly read-only and cannot create accounts
-      if (req.user!.role === Role.AUDITOR) {
+      // Direct account creation is strictly restricted to ADMIN role.
+      // Account holders must submit an account request via the request workflow.
+      if (req.user!.role !== Role.ADMIN) {
         res.status(403).json({
           success: false,
-          message: 'Permission denied: Auditor is strictly read-only and cannot open new accounts.',
-        });
-        return;
-      }
-
-      // Privileged institutional account types require ADMIN role
-      if (
-        (data.type === AccountType.ESCROW ||
-          data.type === AccountType.TREASURY ||
-          data.type === AccountType.SETTLEMENT_CLEARING) &&
-        req.user!.role !== Role.ADMIN
-      ) {
-        res.status(403).json({
-          success: false,
-          message: `Permission denied: Opening an ${data.type} account requires ADMIN privileges.`,
+          message:
+            req.user!.role === Role.AUDITOR
+              ? 'Permission denied: Auditor is strictly read-only and cannot open new accounts.'
+              : 'Direct account creation is restricted to administrators. Please submit an account request via /api/account-requests.',
         });
         return;
       }

@@ -316,6 +316,7 @@ DB = {
         'token-user-123': 'usr-user-002',
         'token-auditor-123': 'usr-auditor-003'
     },
+    'accountRequests': [],
     'passwordResetTokens': {},
     'usedTotpSteps': set(),
     'rateLimitCounters': {},
@@ -540,6 +541,41 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             else:
                 accounts = [a for a in DB['accounts'] if a.get('userId') == current_user['id']]
             self._send_json(200, {'success': True, 'accounts': accounts})
+            return
+
+        if path == '/api/account-requests':
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+            is_privileged = current_user['role'] in ('ADMIN', 'AUDITOR')
+            raw_reqs = DB['accountRequests'] if is_privileged else [r for r in DB['accountRequests'] if r.get('userId') == current_user['id']]
+            populated = []
+            for r in raw_reqs:
+                applicant = next((u for u in DB['users'] if u['id'] == r.get('userId')), None)
+                reviewer = next((u for u in DB['users'] if u['id'] == r.get('reviewedById')), None)
+                item = dict(r)
+                if applicant:
+                    item['user'] = {'id': applicant['id'], 'email': applicant['email'], 'fullName': applicant['fullName'], 'role': applicant['role']}
+                if reviewer:
+                    item['reviewedBy'] = {'id': reviewer['id'], 'email': reviewer['email'], 'fullName': reviewer['fullName']}
+                populated.append(item)
+            self._send_json(200, {'success': True, 'requests': populated})
+            return
+
+        if path.startswith('/api/account-requests/') and not path.endswith('/approve') and not path.endswith('/reject'):
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+            req_id = path.split('/api/account-requests/')[1]
+            target = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
+            if not target:
+                self._send_json(404, {'success': False, 'message': 'Account request not found.'})
+                return
+            is_privileged = current_user['role'] in ('ADMIN', 'AUDITOR')
+            if not is_privileged and target.get('userId') != current_user['id']:
+                self._send_json(403, {'success': False, 'message': 'Access denied: You can only view your own account requests.'})
+                return
+            self._send_json(200, {'success': True, 'request': target})
             return
 
         if path == '/api/transactions':
@@ -967,11 +1003,14 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             if not current_user:
                 return
 
-            if current_user['role'] == 'AUDITOR':
+            if current_user['role'] != 'ADMIN':
                 DB['unauthorizedAttempts'] += 1
+                msg = ('Permission denied: Auditor is strictly read-only and cannot open new accounts.'
+                       if current_user['role'] == 'AUDITOR'
+                       else 'Direct account creation is restricted to administrators. Please submit an account request via /api/account-requests.')
                 self._send_json(403, {
                     'success': False,
-                    'message': 'Permission denied: Auditor is strictly read-only and cannot open new accounts.'
+                    'message': msg
                 })
                 return
 
@@ -1087,6 +1126,277 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                     'success': True,
                     'message': 'Account opened successfully with atomic double-entry verification.',
                     'account': new_acc
+                })
+                return
+
+        # 5.6 SUBMIT ACCOUNT OPENING REQUEST
+        if path == '/api/account-requests':
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+
+            if current_user['role'] == 'AUDITOR':
+                DB['unauthorizedAttempts'] += 1
+                self._send_json(403, {
+                    'success': False,
+                    'message': 'Permission denied: Auditor is strictly read-only and cannot submit account requests.'
+                })
+                return
+
+            account_name = str(body.get('accountName') or body.get('name', '')).strip()
+            account_type = str(body.get('accountType') or body.get('type', 'CHECKING')).upper().strip()
+            try:
+                req_bal = float(body.get('requestedBalance') or body.get('initialBalance', 0))
+            except (ValueError, TypeError):
+                self._send_json(400, {'success': False, 'message': 'Requested opening balance must be a valid number.'})
+                return
+
+            if len(account_name) < 2:
+                self._send_json(400, {'success': False, 'message': 'Account name must be at least 2 characters.'})
+                return
+
+            if req_bal < 0:
+                self._send_json(400, {'success': False, 'message': 'Requested opening balance cannot be negative.'})
+                return
+
+            currency = str(body.get('currency', 'USD')).strip()
+            reason = str(body.get('reason', '')).strip()
+
+            with db_lock:
+                new_req = {
+                    'id': f'req-{int(time.time() * 1000)}-{secrets.randbelow(1000)}',
+                    'userId': current_user['id'],
+                    'accountName': account_name,
+                    'accountType': account_type,
+                    'requestedBalance': req_bal,
+                    'currency': currency,
+                    'reason': reason,
+                    'status': 'PENDING',
+                    'adminRemarks': None,
+                    'reviewedById': None,
+                    'reviewedAt': None,
+                    'createdAccountId': None,
+                    'createdAt': get_utc_now().isoformat(),
+                    'updatedAt': get_utc_now().isoformat()
+                }
+                DB['accountRequests'].insert(0, new_req)
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ACCOUNT_REQUEST_CREATED',
+                    'status': 'SUCCESS',
+                    'resource': 'ACCOUNT_REQUEST',
+                    'user': {'email': current_user['email'], 'fullName': current_user.get('fullName', '')},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {
+                        'requestId': new_req['id'],
+                        'accountName': account_name,
+                        'accountType': account_type,
+                        'requestedBalance': req_bal
+                    },
+                    'createdAt': get_utc_now().isoformat()
+                })
+
+                self._send_json(201, {
+                    'success': True,
+                    'message': 'Account opening request submitted successfully. Awaiting administrator review.',
+                    'request': new_req
+                })
+                return
+
+        # 5.7 APPROVE ACCOUNT REQUEST (ADMIN ONLY + SELF-APPROVAL PROHIBITION + ATOMIC)
+        if path.startswith('/api/account-requests/') and path.endswith('/approve'):
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+
+            if current_user['role'] != 'ADMIN':
+                DB['unauthorizedAttempts'] += 1
+                self._send_json(403, {
+                    'success': False,
+                    'message': 'Permission denied: Only administrators can approve account requests.'
+                })
+                return
+
+            req_id = path.split('/api/account-requests/')[1].split('/approve')[0]
+            with db_lock:
+                target_req = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
+                if not target_req:
+                    self._send_json(404, {'success': False, 'message': 'Account request not found.'})
+                    return
+
+                # Self-approval prohibition
+                if target_req.get('userId') == current_user['id']:
+                    self._send_json(403, {
+                        'success': False,
+                        'message': 'Self-approval prohibited: Administrators cannot approve their own account requests.'
+                    })
+                    return
+
+                if target_req.get('status') != 'PENDING':
+                    self._send_json(409, {
+                        'success': False,
+                        'message': f'Cannot approve request: Request is already {target_req.get("status")}.'
+                    })
+                    return
+
+                # Atomic account creation & ledger entry
+                account_type = target_req['accountType']
+                prefix_map = {
+                    'CHECKING': 'CHK',
+                    'SAVINGS': 'SAV',
+                    'INVESTMENT': 'INV',
+                    'TREASURY': 'TRS',
+                    'ESCROW': 'ESC',
+                    'SETTLEMENT_CLEARING': 'CLR'
+                }
+                prefix = prefix_map.get(account_type, 'ACT')
+                acc_num = f"BV-{prefix}-{random.randint(100000, 999999)}"
+                init_bal = float(target_req.get('requestedBalance', 0))
+
+                new_acc = {
+                    'id': f'acc-{int(time.time() * 1000)}',
+                    'userId': target_req['userId'],
+                    'accountNumber': acc_num,
+                    'name': target_req['accountName'],
+                    'type': account_type,
+                    'balance': init_bal,
+                    'currency': target_req.get('currency', 'USD'),
+                    'status': 'ACTIVE',
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['accounts'].append(new_acc)
+
+                # Permissions
+                DB['accountPermissions'][(target_req['userId'], new_acc['id'])] = {
+                    'canView': True,
+                    'canDeposit': True,
+                    'canWithdraw': True,
+                    'canTransfer': True
+                }
+
+                # Atomic Double-Entry Ledger if opening balance > 0
+                if init_bal > 0:
+                    ref = f"DEP-INIT-{acc_num}"
+                    debit_entry = {
+                        'id': f'led-{len(DB["ledgerEntries"]) + 1}',
+                        'transactionRef': ref,
+                        'accountId': 'acc-clearing-ext',
+                        'accountNumber': 'BV-EXT-CLEARING',
+                        'type': 'DEBIT',
+                        'amount': init_bal,
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    credit_entry = {
+                        'id': f'led-{len(DB["ledgerEntries"]) + 2}',
+                        'transactionRef': ref,
+                        'accountId': new_acc['id'],
+                        'accountNumber': new_acc['accountNumber'],
+                        'type': 'CREDIT',
+                        'amount': init_bal,
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    DB['ledgerEntries'].extend([debit_entry, credit_entry])
+
+                    new_txn = {
+                        'id': f'txn-{len(DB["transactions"]) + 1}',
+                        'referenceNumber': ref,
+                        'type': 'DEPOSIT',
+                        'amount': init_bal,
+                        'currency': 'USD',
+                        'status': 'COMPLETED',
+                        'description': f'Initial opening balance deposit for {new_acc["name"]}',
+                        'sourceAccount': None,
+                        'destinationAccount': {'accountNumber': new_acc['accountNumber'], 'name': new_acc['name']},
+                        'createdAt': get_utc_now().isoformat()
+                    }
+                    DB['transactions'].insert(0, new_txn)
+
+                remarks = str(body.get('remarks', 'Approved by administrator')).strip()
+                target_req['status'] = 'APPROVED'
+                target_req['adminRemarks'] = remarks
+                target_req['reviewedById'] = current_user['id']
+                target_req['reviewedAt'] = get_utc_now().isoformat()
+                target_req['createdAccountId'] = new_acc['id']
+                target_req['updatedAt'] = get_utc_now().isoformat()
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ACCOUNT_REQUEST_APPROVED',
+                    'status': 'SUCCESS',
+                    'resource': 'ACCOUNT_REQUEST',
+                    'user': {'email': current_user['email'], 'fullName': current_user.get('fullName', '')},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {
+                        'requestId': target_req['id'],
+                        'createdAccountId': new_acc['id'],
+                        'accountNumber': new_acc['accountNumber'],
+                        'initialBalance': init_bal
+                    },
+                    'createdAt': get_utc_now().isoformat()
+                })
+
+                self._send_json(200, {
+                    'success': True,
+                    'message': 'Account request successfully approved and vault account created.',
+                    'request': target_req,
+                    'account': new_acc
+                })
+                return
+
+        # 5.8 REJECT ACCOUNT REQUEST (ADMIN ONLY)
+        if path.startswith('/api/account-requests/') and path.endswith('/reject'):
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+
+            if current_user['role'] != 'ADMIN':
+                DB['unauthorizedAttempts'] += 1
+                self._send_json(403, {
+                    'success': False,
+                    'message': 'Permission denied: Only administrators can reject account requests.'
+                })
+                return
+
+            req_id = path.split('/api/account-requests/')[1].split('/reject')[0]
+            with db_lock:
+                target_req = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
+                if not target_req:
+                    self._send_json(404, {'success': False, 'message': 'Account request not found.'})
+                    return
+
+                if target_req.get('status') != 'PENDING':
+                    self._send_json(409, {
+                        'success': False,
+                        'message': f'Cannot reject request: Request is already {target_req.get("status")}.'
+                    })
+                    return
+
+                remarks = str(body.get('remarks') or body.get('reason', 'Rejected by administrator')).strip()
+                target_req['status'] = 'REJECTED'
+                target_req['adminRemarks'] = remarks
+                target_req['reviewedById'] = current_user['id']
+                target_req['reviewedAt'] = get_utc_now().isoformat()
+                target_req['updatedAt'] = get_utc_now().isoformat()
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ACCOUNT_REQUEST_REJECTED',
+                    'status': 'SUCCESS',
+                    'resource': 'ACCOUNT_REQUEST',
+                    'user': {'email': current_user['email'], 'fullName': current_user.get('fullName', '')},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {
+                        'requestId': target_req['id'],
+                        'remarks': remarks
+                    },
+                    'createdAt': get_utc_now().isoformat()
+                })
+
+                self._send_json(200, {
+                    'success': True,
+                    'message': 'Account request has been rejected.',
+                    'request': target_req
                 })
                 return
 

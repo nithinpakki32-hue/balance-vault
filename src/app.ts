@@ -11,6 +11,7 @@ import authRoutes from './routes/auth.routes.js';
 import accountRoutes from './routes/account.routes.js';
 import transactionRoutes from './routes/transaction.routes.js';
 import adminRoutes from './routes/admin.routes.js';
+import accountRequestRoutes from './routes/account-request.routes.js';
 
 export function createApp(): Express {
   const app = express();
@@ -74,6 +75,7 @@ export function createApp(): Express {
   app.use(['/api/accounts', '/accounts'], accountRoutes);
   app.use(['/api/transactions', '/transactions'], transactionRoutes);
   app.use(['/api/admin', '/admin'], adminRoutes);
+  app.use(['/api/account-requests', '/account-requests'], accountRequestRoutes);
 
   // 404 Handler
   app.use((req, res) => {

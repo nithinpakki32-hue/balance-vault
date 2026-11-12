@@ -29,6 +29,12 @@ enum AccountStatus {
   CLOSED
 }
 
+enum AccountRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum TransactionType {
   DEPOSIT
   WITHDRAWAL
@@ -102,6 +108,8 @@ model User {
   initiatedTransactions  Transaction[]       @relation("Initiator")
   auditLogs              AuditLog[]
   securityEvents         SecurityEvent[]
+  accountRequests        AccountRequest[]    @relation("UserAccountRequests")
+  reviewedAccountRequests AccountRequest[]   @relation("AdminReviewedRequests")
 
   @@index([email])
   @@index([role])
@@ -126,6 +134,7 @@ model Account {
   outgoingTransactions  Transaction[]       @relation("SourceAccount")
   incomingTransactions  Transaction[]       @relation("DestinationAccount")
   ledgerEntries         LedgerEntry[]
+  accountRequests       AccountRequest[]
 
   @@index([userId])
   @@index([accountNumber])
@@ -254,4 +263,29 @@ model SecurityEvent {
   @@index([severity])
   @@index([userId])
   @@index([createdAt])
+}
+
+model AccountRequest {
+  id               String               @id @default(uuid())
+  userId           String
+  user             User                 @relation("UserAccountRequests", fields: [userId], references: [id], onDelete: Cascade)
+  accountName      String
+  accountType      AccountType          @default(CHECKING)
+  requestedBalance Decimal              @default(0.0000) @db.Decimal(18, 4)
+  currency         String               @default("USD")
+  reason           String?
+  status           AccountRequestStatus @default(PENDING)
+  adminRemarks     String?
+  reviewedById     String?
+  reviewedBy       User?                @relation("AdminReviewedRequests", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt       DateTime?
+  createdAccountId String?
+  createdAccount   Account?             @relation(fields: [createdAccountId], references: [id], onDelete: SetNull)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([reviewedById])
 }

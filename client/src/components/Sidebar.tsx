@@ -7,7 +7,8 @@ import {
   ShieldAlert,
   ShieldCheck,
   Users,
-  Cpu
+  Cpu,
+  FileText
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -86,6 +87,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
                 >
                   <Users className="w-4 h-4" />
                   <span>User Directory</span>
+                </button>
+              )}
+
+              {isAuditorOrAdmin && (
+                <button
+                  onClick={() => onSelectTab('admin-account-requests')}
+                  className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    currentTab === 'admin-account-requests'
+                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-amber-400" />
+                  <span>Account Requests</span>
                 </button>
               )}
 
