@@ -5,6 +5,18 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/ready",
+      "destination": "/api/ready"
+    },
+    {
+      "source": "/api/:match*",
+      "destination": "/api?match=:match*"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
