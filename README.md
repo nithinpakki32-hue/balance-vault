@@ -23,7 +23,7 @@ The application is deployed and running on the Vercel Global Edge Network with f
 |:---|:---|:---|:---|
 | 🚀 **Production Web App (Primary)** | **[https://balance-vault-lac.vercel.app](https://balance-vault-lac.vercel.app)** | ![Live](https://img.shields.io/badge/Status-Online%20(HTTP%20200)-brightgreen) | Primary Production App |
 | 🔗 **Team Alias Domain** | **[https://balance-vault-nithinpakki32-hue.vercel.app](https://balance-vault-nithinpakki32-hue.vercel.app)** | ![Active](https://img.shields.io/badge/Status-Active-brightgreen) | Production Mirror Alias |
-| 📦 **Vercel Deployment** | [View on Vercel](https://vercel.com/nithinpakki32-hue/balance-vault/H5Nxw4GKpaCVN6eqkEH29caZTvDL) | ![Ready](https://img.shields.io/badge/Deployment-READY-blue) | Deployment `dpl_H5Nxw4GKpaCVN6eqkEH29caZTvDL` |
+| 📦 **Vercel Deployment** | [View on Vercel](https://vercel.com/nithinpakki32-hue/balance-vault/J3WYsayBv5KVZyFsaLuaTBf6DbLE) | ![Ready](https://img.shields.io/badge/Deployment-READY-blue) | Deployment `dpl_J3WYsayBv5KVZyFsaLuaTBf6DbLE` |
 
 ---
 
