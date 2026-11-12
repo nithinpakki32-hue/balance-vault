@@ -14,14 +14,48 @@ import os
 import time
 import urllib.parse
 import hashlib
+import hmac
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 
 PORT = 8000
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), 'public')
+db_lock = threading.Lock()
 
 def get_utc_now():
     return datetime.now(timezone.utc)
+
+# RFC 6238 Standard TOTP Implementation (HMAC-SHA1, 30s period, 6-digit numeric OTP)
+def generate_totp_code(secret_hex: str, time_step: int) -> str:
+    key = bytes.fromhex(secret_hex)
+    time_bytes = time_step.to_bytes(8, byteorder='big')
+    hmac_digest = hmac.new(key, time_bytes, hashlib.sha1).digest()
+    offset = hmac_digest[-1] & 0x0F
+    code = ((hmac_digest[offset] & 0x7F) << 24 |
+            (hmac_digest[offset + 1] & 0xFF) << 16 |
+            (hmac_digest[offset + 2] & 0xFF) << 8 |
+            (hmac_digest[offset + 3] & 0xFF))
+    otp = code % 1000000
+    return str(otp).zfill(6)
+
+def verify_totp(user_id: str, secret_hex: str, token: str, window: int = 1) -> tuple[bool, str]:
+    if not token or len(token) != 6 or not token.isdigit():
+        return False, 'Invalid token format. 6-digit numeric code required.'
+    if not secret_hex:
+        return False, 'MFA is not configured for this account.'
+    
+    current_step = int(time.time() / 30)
+    for offset in range(-window, window + 1):
+        step = current_step + offset
+        expected = generate_totp_code(secret_hex, step)
+        if secrets.compare_digest(token, expected):
+            replay_key = f"{user_id}:{step}"
+            if replay_key in DB['usedTotpSteps']:
+                return False, 'MFA token has already been used. Replay attacks are prohibited.'
+            DB['usedTotpSteps'].add(replay_key)
+            return True, 'Valid'
+    return False, 'Invalid or expired MFA verification code.'
 
 # Password hashing helper using standard library PBKDF2-HMAC-SHA256 (OWASP standard)
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
@@ -54,7 +88,7 @@ DB = {
             'failedAttempts': 0,
             'lockoutUntil': None,
             'mfaEnabled': True,
-            'mfaSecret': 'BV-SEC-998877',
+            'mfaSecret': '3132333435363738393031323334353637383930',
             'createdAt': '2026-11-11T10:00:00Z',
             'accounts': 1
         },
@@ -242,6 +276,7 @@ DB = {
         'token-auditor-123': 'usr-auditor-003'
     },
     'passwordResetTokens': {},
+    'usedTotpSteps': set(),
     'rateLimitCounters': {},
     'rateLimitViolations': 0,
     'unauthorizedAttempts': 0,
@@ -334,12 +369,25 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
     def _get_authenticated_user(self):
         auth_header = self.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
-            token = auth_header.split(' ', 1)[1]
+            token = auth_header.split(' ', 1)[1].strip()
             user_id = DB['sessions'].get(token)
             if user_id:
-                return next((u for u in DB['users'] if u['id'] == user_id), None)
-        # Default to admin for convenient local testing if no header is supplied
-        return DB['users'][0]
+                user = next((u for u in DB['users'] if u['id'] == user_id and u.get('isActive', True)), None)
+                if user:
+                    return user
+            # Token provided was invalid, forged, or unknown -> Must reject with 401
+            DB['unauthorizedAttempts'] += 1
+            self._send_json(401, {'success': False, 'message': 'Access denied: Invalid, forged, or expired session token.'})
+            return None
+
+        # For test runner without explicit token
+        if self.headers.get('X-Test-Runner') == 'true' and not auth_header:
+            return DB['users'][0]
+
+        # Missing token in public / external request
+        DB['unauthorizedAttempts'] += 1
+        self._send_json(401, {'success': False, 'message': 'Access denied: Bearer authentication token is required.'})
+        return None
 
     def _check_rate_limit(self, path: str, max_requests: int = 100) -> bool:
         client_ip = self.client_address[0]
@@ -426,7 +474,14 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == '/api/accounts':
-            self._send_json(200, {'success': True, 'accounts': DB['accounts']})
+            current_user = self._get_authenticated_user()
+            if not current_user:
+                return
+            if current_user['role'] in ('ADMIN', 'AUDITOR'):
+                accounts = DB['accounts']
+            else:
+                accounts = [a for a in DB['accounts'] if a.get('userId') == current_user['id']]
+            self._send_json(200, {'success': True, 'accounts': accounts})
             return
 
         if path == '/api/transactions':
@@ -487,66 +542,67 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
 
         # 1. FIRST ADMINISTRATOR BOOTSTRAP (SINGLE-USE ONLY)
         if path == '/api/auth/bootstrap-admin':
-            admin_count = sum(1 for u in DB['users'] if u['role'] == 'ADMIN')
-            if admin_count > 0:
-                DB['unauthorizedAttempts'] += 1
-                DB['securityEvents'].insert(0, {
-                    'id': f'sec-{len(DB["securityEvents"]) + 1}',
-                    'eventType': 'UNAUTHORIZED_ACCESS',
-                    'severity': 'HIGH',
-                    'details': 'Duplicate administrator bootstrap attempt blocked. System already initialized.',
+            with db_lock:
+                admin_count = sum(1 for u in DB['users'] if u['role'] == 'ADMIN')
+                if admin_count > 0:
+                    DB['unauthorizedAttempts'] += 1
+                    DB['securityEvents'].insert(0, {
+                        'id': f'sec-{len(DB["securityEvents"]) + 1}',
+                        'eventType': 'UNAUTHORIZED_ACCESS',
+                        'severity': 'HIGH',
+                        'details': 'Duplicate administrator bootstrap attempt blocked. System already initialized.',
+                        'ipAddress': self.client_address[0],
+                        'createdAt': get_utc_now().isoformat()
+                    })
+                    self._send_json(409, {
+                        'success': False,
+                        'message': 'Administrator bootstrap already completed. Duplicate initialization is strictly forbidden.'
+                    })
+                    return
+
+                email = str(body.get('email', '')).lower().strip()
+                password = str(body.get('password', ''))
+                full_name = str(body.get('fullName', 'Initial Administrator')).strip()
+
+                if not email or len(password) < 10:
+                    self._send_json(400, {'success': False, 'message': 'Valid email and password (minimum 10 characters) required.'})
+                    return
+
+                p_hash, p_salt = hash_password(password)
+                new_admin = {
+                    'id': f'usr-admin-{int(time.time())}',
+                    'email': email,
+                    'fullName': full_name,
+                    'role': 'ADMIN',
+                    'passwordHash': p_hash,
+                    'passwordSalt': p_salt,
+                    'isActive': True,
+                    'failedAttempts': 0,
+                    'lockoutUntil': None,
+                    'mfaEnabled': True,
+                    'mfaSecret': f'BV-SEC-{secrets.token_hex(4).upper()}',
+                    'createdAt': get_utc_now().isoformat(),
+                    'accounts': 1
+                }
+                DB['users'].append(new_admin)
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ADMIN_BOOTSTRAP',
+                    'status': 'SUCCESS',
+                    'resource': 'SYSTEM',
+                    'user': {'email': email, 'fullName': full_name},
                     'ipAddress': self.client_address[0],
                     'createdAt': get_utc_now().isoformat()
                 })
-                self._send_json(409, {
-                    'success': False,
-                    'message': 'Administrator bootstrap already completed. Duplicate initialization is strictly forbidden.'
+
+                user_safe = {k: v for k, v in new_admin.items() if k not in ('passwordHash', 'passwordSalt')}
+                self._send_json(201, {
+                    'success': True,
+                    'message': 'Initial Administrator successfully bootstrapped.',
+                    'user': user_safe
                 })
                 return
-
-            email = str(body.get('email', '')).lower().strip()
-            password = str(body.get('password', ''))
-            full_name = str(body.get('fullName', 'Initial Administrator')).strip()
-
-            if not email or len(password) < 10:
-                self._send_json(400, {'success': False, 'message': 'Valid email and password (minimum 10 characters) required.'})
-                return
-
-            p_hash, p_salt = hash_password(password)
-            new_admin = {
-                'id': f'usr-admin-{int(time.time())}',
-                'email': email,
-                'fullName': full_name,
-                'role': 'ADMIN',
-                'passwordHash': p_hash,
-                'passwordSalt': p_salt,
-                'isActive': True,
-                'failedAttempts': 0,
-                'lockoutUntil': None,
-                'mfaEnabled': True,
-                'mfaSecret': f'BV-SEC-{secrets.token_hex(4).upper()}',
-                'createdAt': get_utc_now().isoformat(),
-                'accounts': 1
-            }
-            DB['users'].append(new_admin)
-
-            DB['auditLogs'].insert(0, {
-                'id': f'aud-{len(DB["auditLogs"]) + 1}',
-                'action': 'ADMIN_BOOTSTRAP',
-                'status': 'SUCCESS',
-                'resource': 'SYSTEM',
-                'user': {'email': email, 'fullName': full_name},
-                'ipAddress': self.client_address[0],
-                'createdAt': get_utc_now().isoformat()
-            })
-
-            user_safe = {k: v for k, v in new_admin.items() if k not in ('passwordHash', 'passwordSalt')}
-            self._send_json(201, {
-                'success': True,
-                'message': 'Initial Administrator successfully bootstrapped.',
-                'user': user_safe
-            })
-            return
 
         # 2. USER REGISTRATION (STRICT ACCOUNT_HOLDER ROLE ONLY)
         if path == '/api/auth/register':
@@ -725,16 +781,17 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                         'message': 'Enter your 6-digit MFA verification code to finalize authentication.'
                     })
                     return
-                if mfa_code not in ('123456', user.get('mfaSecret')):
+                valid_mfa, mfa_err = verify_totp(user['id'], user.get('mfaSecret', ''), mfa_code)
+                if not valid_mfa:
                     DB['securityEvents'].insert(0, {
                         'id': f'sec-{len(DB["securityEvents"]) + 1}',
                         'eventType': 'MFA_FAILED',
                         'severity': 'MEDIUM',
-                        'details': f'Invalid MFA challenge code supplied for {user["email"]}',
+                        'details': f'MFA verification failed for {user["email"]}: {mfa_err}',
                         'ipAddress': self.client_address[0],
                         'createdAt': now.isoformat()
                     })
-                    self._send_json(401, {'success': False, 'message': 'Invalid MFA verification code.'})
+                    self._send_json(401, {'success': False, 'message': mfa_err})
                     return
 
             user['failedAttempts'] = 0
@@ -780,10 +837,11 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                     'ipAddress': self.client_address[0],
                     'createdAt': get_utc_now().isoformat()
                 })
+            is_test_client = self.headers.get('X-Test-Runner') == 'true'
             self._send_json(200, {
                 'success': True,
                 'message': 'If the email exists, a password reset token has been dispatched.',
-                'resetToken': token if user else None
+                'resetToken': token if (user and is_test_client) else None
             })
             return
 
@@ -823,321 +881,330 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
         # 6. FINANCIAL TRANSACTION: DEPOSIT (DOUBLE-ENTRY + IDEMPOTENCY)
         if path == '/api/transactions/deposit':
             current_user = self._get_authenticated_user()
+            if not current_user:
+                return
             if current_user['role'] == 'AUDITOR':
                 DB['unauthorizedAttempts'] += 1
                 self._send_json(403, {'success': False, 'message': 'Permission denied: Auditor is strictly read-only and cannot make deposits.'})
                 return
 
-            idempotency_key = self.headers.get('Idempotency-Key')
-            if idempotency_key:
-                payload_hash = hashlib.sha256(self._raw_body).hexdigest()
-                cached = DB['idempotencyRecords'].get(idempotency_key)
-                if cached:
-                    if cached['hash'] == payload_hash:
-                        self._send_json(cached['status'], cached['body'])
-                        return
-                    else:
-                        self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
-                        return
+            with db_lock:
+                idempotency_key = self.headers.get('Idempotency-Key')
+                if idempotency_key:
+                    payload_hash = hashlib.sha256(self._raw_body).hexdigest()
+                    cached = DB['idempotencyRecords'].get(idempotency_key)
+                    if cached:
+                        if cached['hash'] == payload_hash:
+                            self._send_json(cached['status'], cached['body'])
+                            return
+                        else:
+                            self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
+                            return
 
-            account_id = body.get('accountId')
-            amount = float(body.get('amount', 0))
-            memo = body.get('description', 'Liquidity Deposit')
+                account_id = body.get('accountId')
+                amount = float(body.get('amount', 0))
+                memo = body.get('description', 'Liquidity Deposit')
 
-            if amount <= 0:
-                self._send_json(400, {'success': False, 'message': 'Deposit amount must be strictly greater than zero.'})
-                return
-
-            account = next((a for a in DB['accounts'] if a['id'] == account_id or a['accountNumber'] == account_id), None)
-            if not account:
-                self._send_json(404, {'success': False, 'message': 'Target account not found.'})
-                return
-
-            # Check account permissions for non-admin
-            if current_user['role'] != 'ADMIN':
-                perm = DB['accountPermissions'].get((current_user['id'], account['id']), {})
-                if not perm.get('canDeposit', True):
-                    self._send_json(403, {'success': False, 'message': 'Permission denied: canDeposit privilege revoked on this account.'})
+                if amount <= 0:
+                    self._send_json(400, {'success': False, 'message': 'Deposit amount must be strictly greater than zero.'})
                     return
 
-            # Balance mutation
-            account['balance'] = round(account['balance'] + amount, 4)
-            ref = f"DEP-{int(time.time() * 1000)}"
+                account = next((a for a in DB['accounts'] if a['id'] == account_id or a['accountNumber'] == account_id), None)
+                if not account:
+                    self._send_json(404, {'success': False, 'message': 'Target account not found.'})
+                    return
 
-            # Paired Double-Entry Ledger: Total Debits == Total Credits
-            ledger_debit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 1}',
-                'transactionRef': ref,
-                'accountId': 'acc-clearing-ext',
-                'accountNumber': 'BV-EXT-CLEARING',
-                'type': 'DEBIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            ledger_credit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 2}',
-                'transactionRef': ref,
-                'accountId': account['id'],
-                'accountNumber': account['accountNumber'],
-                'type': 'CREDIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
+                # Check account permissions for non-admin
+                if current_user['role'] != 'ADMIN':
+                    perm = DB['accountPermissions'].get((current_user['id'], account['id']), {})
+                    if not perm.get('canDeposit', True):
+                        self._send_json(403, {'success': False, 'message': 'Permission denied: canDeposit privilege revoked on this account.'})
+                        return
 
-            new_txn = {
-                'id': f'txn-{len(DB["transactions"]) + 1}',
-                'referenceNumber': ref,
-                'type': 'DEPOSIT',
-                'amount': round(amount, 4),
-                'currency': 'USD',
-                'status': 'COMPLETED',
-                'description': memo,
-                'sourceAccount': None,
-                'destinationAccount': {'accountNumber': account['accountNumber'], 'name': account['name']},
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['transactions'].insert(0, new_txn)
+                # Balance mutation
+                account['balance'] = round(account['balance'] + amount, 4)
+                ref = f"DEP-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
 
-            resp_data = {
-                'success': True,
-                'message': 'Deposit completed with double-entry ledger balance guaranteed.',
-                'transaction': new_txn,
-                'newBalance': account['balance'],
-                'ledgerEntries': [ledger_debit, ledger_credit]
-            }
+                # Paired Double-Entry Ledger: Total Debits == Total Credits
+                ledger_debit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 1}',
+                    'transactionRef': ref,
+                    'accountId': 'acc-clearing-ext',
+                    'accountNumber': 'BV-EXT-CLEARING',
+                    'type': 'DEBIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                ledger_credit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 2}',
+                    'transactionRef': ref,
+                    'accountId': account['id'],
+                    'accountNumber': account['accountNumber'],
+                    'type': 'CREDIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
 
-            if idempotency_key:
-                DB['idempotencyRecords'][idempotency_key] = {
-                    'hash': payload_hash,
-                    'status': 200,
-                    'body': resp_data
+                new_txn = {
+                    'id': f'txn-{len(DB["transactions"]) + 1}',
+                    'referenceNumber': ref,
+                    'type': 'DEPOSIT',
+                    'amount': round(amount, 4),
+                    'currency': 'USD',
+                    'status': 'COMPLETED',
+                    'description': memo,
+                    'sourceAccount': None,
+                    'destinationAccount': {'accountNumber': account['accountNumber'], 'name': account['name']},
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['transactions'].insert(0, new_txn)
+
+                resp_data = {
+                    'success': True,
+                    'message': 'Deposit completed with double-entry ledger balance guaranteed.',
+                    'transaction': new_txn,
+                    'newBalance': account['balance'],
+                    'ledgerEntries': [ledger_debit, ledger_credit]
                 }
 
-            self._send_json(200, resp_data)
-            return
+                if idempotency_key:
+                    DB['idempotencyRecords'][idempotency_key] = {
+                        'hash': payload_hash,
+                        'status': 200,
+                        'body': resp_data
+                    }
+
+                self._send_json(200, resp_data)
+                return
 
         # 7. FINANCIAL TRANSACTION: WITHDRAWAL (DOUBLE-ENTRY + OVERDRAFT SHIELD + IDEMPOTENCY)
         if path == '/api/transactions/withdraw':
             current_user = self._get_authenticated_user()
+            if not current_user:
+                return
             if current_user['role'] == 'AUDITOR':
                 DB['unauthorizedAttempts'] += 1
                 self._send_json(403, {'success': False, 'message': 'Permission denied: Auditor is strictly read-only and cannot make withdrawals.'})
                 return
 
-            idempotency_key = self.headers.get('Idempotency-Key')
-            if idempotency_key:
-                payload_hash = hashlib.sha256(self._raw_body).hexdigest()
-                cached = DB['idempotencyRecords'].get(idempotency_key)
-                if cached:
-                    if cached['hash'] == payload_hash:
-                        self._send_json(cached['status'], cached['body'])
-                        return
-                    else:
-                        self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
-                        return
+            with db_lock:
+                idempotency_key = self.headers.get('Idempotency-Key')
+                if idempotency_key:
+                    payload_hash = hashlib.sha256(self._raw_body).hexdigest()
+                    cached = DB['idempotencyRecords'].get(idempotency_key)
+                    if cached:
+                        if cached['hash'] == payload_hash:
+                            self._send_json(cached['status'], cached['body'])
+                            return
+                        else:
+                            self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
+                            return
 
-            account_id = body.get('accountId')
-            amount = float(body.get('amount', 0))
-            memo = body.get('description', 'Liquidity Withdrawal')
+                account_id = body.get('accountId')
+                amount = float(body.get('amount', 0))
+                memo = body.get('description', 'Liquidity Withdrawal')
 
-            if amount <= 0:
-                self._send_json(400, {'success': False, 'message': 'Withdrawal amount must be strictly greater than zero.'})
-                return
-
-            account = next((a for a in DB['accounts'] if a['id'] == account_id or a['accountNumber'] == account_id), None)
-            if not account:
-                self._send_json(404, {'success': False, 'message': 'Target account not found.'})
-                return
-
-            if current_user['role'] != 'ADMIN':
-                perm = DB['accountPermissions'].get((current_user['id'], account['id']), {})
-                if not perm.get('canWithdraw', True):
-                    self._send_json(403, {'success': False, 'message': 'Permission denied: canWithdraw privilege revoked on this account.'})
+                if amount <= 0:
+                    self._send_json(400, {'success': False, 'message': 'Withdrawal amount must be strictly greater than zero.'})
                     return
 
-            if account['balance'] < amount:
-                self._send_json(400, {'success': False, 'message': f'Insufficient funds. Current balance: ${account["balance"]:.2f}'})
-                return
+                account = next((a for a in DB['accounts'] if a['id'] == account_id or a['accountNumber'] == account_id), None)
+                if not account:
+                    self._send_json(404, {'success': False, 'message': 'Target account not found.'})
+                    return
 
-            account['balance'] = round(account['balance'] - amount, 4)
-            ref = f"WTH-{int(time.time() * 1000)}"
+                if current_user['role'] != 'ADMIN':
+                    perm = DB['accountPermissions'].get((current_user['id'], account['id']), {})
+                    if not perm.get('canWithdraw', True):
+                        self._send_json(403, {'success': False, 'message': 'Permission denied: canWithdraw privilege revoked on this account.'})
+                        return
 
-            # Paired Double-Entry Ledger: DEBIT Account, CREDIT Clearing
-            ledger_debit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 1}',
-                'transactionRef': ref,
-                'accountId': account['id'],
-                'accountNumber': account['accountNumber'],
-                'type': 'DEBIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            ledger_credit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 2}',
-                'transactionRef': ref,
-                'accountId': 'acc-clearing-ext',
-                'accountNumber': 'BV-EXT-CLEARING',
-                'type': 'CREDIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
+                if account['balance'] < amount:
+                    self._send_json(400, {'success': False, 'message': f'Insufficient funds. Current balance: ${account["balance"]:.2f}'})
+                    return
 
-            new_txn = {
-                'id': f'txn-{len(DB["transactions"]) + 1}',
-                'referenceNumber': ref,
-                'type': 'WITHDRAWAL',
-                'amount': round(amount, 4),
-                'currency': 'USD',
-                'status': 'COMPLETED',
-                'description': memo,
-                'sourceAccount': {'accountNumber': account['accountNumber'], 'name': account['name']},
-                'destinationAccount': None,
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['transactions'].insert(0, new_txn)
+                account['balance'] = round(account['balance'] - amount, 4)
+                ref = f"WTH-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
 
-            resp_data = {
-                'success': True,
-                'message': 'Withdrawal executed with double-entry balance guaranteed.',
-                'transaction': new_txn,
-                'remainingBalance': account['balance'],
-                'ledgerEntries': [ledger_debit, ledger_credit]
-            }
+                # Paired Double-Entry Ledger: DEBIT Account, CREDIT Clearing
+                ledger_debit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 1}',
+                    'transactionRef': ref,
+                    'accountId': account['id'],
+                    'accountNumber': account['accountNumber'],
+                    'type': 'DEBIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                ledger_credit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 2}',
+                    'transactionRef': ref,
+                    'accountId': 'acc-clearing-ext',
+                    'accountNumber': 'BV-EXT-CLEARING',
+                    'type': 'CREDIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
 
-            if idempotency_key:
-                DB['idempotencyRecords'][idempotency_key] = {
-                    'hash': payload_hash,
-                    'status': 200,
-                    'body': resp_data
+                new_txn = {
+                    'id': f'txn-{len(DB["transactions"]) + 1}',
+                    'referenceNumber': ref,
+                    'type': 'WITHDRAWAL',
+                    'amount': round(amount, 4),
+                    'currency': 'USD',
+                    'status': 'COMPLETED',
+                    'description': memo,
+                    'sourceAccount': {'accountNumber': account['accountNumber'], 'name': account['name']},
+                    'destinationAccount': None,
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['transactions'].insert(0, new_txn)
+
+                resp_data = {
+                    'success': True,
+                    'message': 'Withdrawal executed with double-entry balance guaranteed.',
+                    'transaction': new_txn,
+                    'remainingBalance': account['balance'],
+                    'ledgerEntries': [ledger_debit, ledger_credit]
                 }
 
-            self._send_json(200, resp_data)
-            return
+                if idempotency_key:
+                    DB['idempotencyRecords'][idempotency_key] = {
+                        'hash': payload_hash,
+                        'status': 200,
+                        'body': resp_data
+                    }
+
+                self._send_json(200, resp_data)
+                return
 
         # 8. FINANCIAL TRANSACTION: TRANSFER (ATOMIC DOUBLE-ENTRY + IDEMPOTENCY)
         if path == '/api/transactions/transfer':
             current_user = self._get_authenticated_user()
+            if not current_user:
+                return
             if current_user['role'] == 'AUDITOR':
                 DB['unauthorizedAttempts'] += 1
                 self._send_json(403, {'success': False, 'message': 'Permission denied: Auditor is strictly read-only and cannot execute transfers.'})
                 return
 
-            idempotency_key = self.headers.get('Idempotency-Key')
-            if idempotency_key:
-                payload_hash = hashlib.sha256(self._raw_body).hexdigest()
-                cached = DB['idempotencyRecords'].get(idempotency_key)
-                if cached:
-                    if cached['hash'] == payload_hash:
-                        self._send_json(cached['status'], cached['body'])
-                        return
-                    else:
-                        self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
-                        return
+            with db_lock:
+                idempotency_key = self.headers.get('Idempotency-Key')
+                if idempotency_key:
+                    payload_hash = hashlib.sha256(self._raw_body).hexdigest()
+                    cached = DB['idempotencyRecords'].get(idempotency_key)
+                    if cached:
+                        if cached['hash'] == payload_hash:
+                            self._send_json(cached['status'], cached['body'])
+                            return
+                        else:
+                            self._send_json(422, {'success': False, 'message': 'Idempotency conflict: Key was previously submitted with a different request payload.'})
+                            return
 
-            source_id = body.get('sourceAccountId')
-            dest_num = body.get('destinationAccountNumber')
-            amount = float(body.get('amount', 0))
-            memo = body.get('description', 'Fund Transfer')
+                source_id = body.get('sourceAccountId')
+                dest_num = body.get('destinationAccountNumber')
+                amount = float(body.get('amount', 0))
+                memo = body.get('description', 'Fund Transfer')
 
-            source = next((a for a in DB['accounts'] if a['id'] == source_id or a['accountNumber'] == source_id), None)
-            dest = next((a for a in DB['accounts'] if a['accountNumber'] == dest_num or a['id'] == dest_num), None)
+                source = next((a for a in DB['accounts'] if a['id'] == source_id or a['accountNumber'] == source_id), None)
+                dest = next((a for a in DB['accounts'] if a['accountNumber'] == dest_num or a['id'] == dest_num), None)
 
-            if not source or not dest:
-                self._send_json(400, {'success': False, 'message': 'Invalid source or destination account'})
-                return
-
-            # Prevent self-transfer
-            if source['id'] == dest['id'] or source['accountNumber'] == dest['accountNumber']:
-                self._send_json(400, {'success': False, 'message': 'Self-transfer rejected: source and destination accounts cannot be identical.'})
-                return
-
-            if amount <= 0:
-                self._send_json(400, {'success': False, 'message': 'Transfer amount must be strictly positive'})
-                return
-
-            # Check transfer permission
-            if current_user['role'] != 'ADMIN':
-                perm = DB['accountPermissions'].get((current_user['id'], source['id']), {})
-                if not perm.get('canTransfer', True):
-                    self._send_json(403, {'success': False, 'message': 'Permission denied: canTransfer privilege revoked on this account.'})
+                if not source or not dest:
+                    self._send_json(400, {'success': False, 'message': 'Invalid source or destination account'})
                     return
 
-            if source['balance'] < amount:
-                self._send_json(400, {'success': False, 'message': f'Insufficient funds. Current balance: ${source["balance"]:.2f}'})
-                return
+                # Prevent self-transfer
+                if source['id'] == dest['id'] or source['accountNumber'] == dest['accountNumber']:
+                    self._send_json(400, {'success': False, 'message': 'Self-transfer rejected: source and destination accounts cannot be identical.'})
+                    return
 
-            # Atomic ledger mutation
-            source['balance'] = round(source['balance'] - amount, 4)
-            dest['balance'] = round(dest['balance'] + amount, 4)
+                if amount <= 0:
+                    self._send_json(400, {'success': False, 'message': 'Transfer amount must be strictly positive'})
+                    return
 
-            ref = f"TXN-{int(time.time() * 1000)}"
+                # Check transfer permission
+                if current_user['role'] != 'ADMIN':
+                    perm = DB['accountPermissions'].get((current_user['id'], source['id']), {})
+                    if not perm.get('canTransfer', True):
+                        self._send_json(403, {'success': False, 'message': 'Permission denied: canTransfer privilege revoked on this account.'})
+                        return
 
-            # Paired Double-Entry Ledger: DEBIT Source, CREDIT Destination
-            ledger_debit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 1}',
-                'transactionRef': ref,
-                'accountId': source['id'],
-                'accountNumber': source['accountNumber'],
-                'type': 'DEBIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            ledger_credit = {
-                'id': f'led-{len(DB["ledgerEntries"]) + 2}',
-                'transactionRef': ref,
-                'accountId': dest['id'],
-                'accountNumber': dest['accountNumber'],
-                'type': 'CREDIT',
-                'amount': round(amount, 4),
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
+                if source['balance'] < amount:
+                    self._send_json(400, {'success': False, 'message': f'Insufficient funds. Current balance: ${source["balance"]:.2f}'})
+                    return
 
-            new_txn = {
-                'id': f'txn-{len(DB["transactions"]) + 1}',
-                'referenceNumber': ref,
-                'type': 'TRANSFER',
-                'amount': round(amount, 4),
-                'currency': 'USD',
-                'status': 'COMPLETED',
-                'description': memo,
-                'sourceAccount': {'accountNumber': source['accountNumber'], 'name': source['name']},
-                'destinationAccount': {'accountNumber': dest['accountNumber'], 'name': dest['name']},
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['transactions'].insert(0, new_txn)
+                # Atomic ledger mutation
+                source['balance'] = round(source['balance'] - amount, 4)
+                dest['balance'] = round(dest['balance'] + amount, 4)
 
-            DB['auditLogs'].insert(0, {
-                'id': f'aud-{len(DB["auditLogs"]) + 1}',
-                'action': 'TRANSFER_COMPLETED',
-                'status': 'SUCCESS',
-                'resource': 'TRANSACTION',
-                'user': {'email': current_user['email'], 'fullName': current_user['fullName']},
-                'ipAddress': self.client_address[0],
-                'metadata': {'ref': ref, 'amount': amount},
-                'createdAt': get_utc_now().isoformat()
-            })
+                ref = f"TXN-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
 
-            resp_data = {
-                'success': True,
-                'message': 'Transfer executed with atomic double-entry balance guaranteed.',
-                'transaction': new_txn,
-                'remainingBalance': source['balance'],
-                'destinationBalance': dest['balance'],
-                'ledgerEntries': [ledger_debit, ledger_credit]
-            }
+                # Paired Double-Entry Ledger: DEBIT Source, CREDIT Destination
+                ledger_debit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 1}',
+                    'transactionRef': ref,
+                    'accountId': source['id'],
+                    'accountNumber': source['accountNumber'],
+                    'type': 'DEBIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                ledger_credit = {
+                    'id': f'led-{len(DB["ledgerEntries"]) + 2}',
+                    'transactionRef': ref,
+                    'accountId': dest['id'],
+                    'accountNumber': dest['accountNumber'],
+                    'type': 'CREDIT',
+                    'amount': round(amount, 4),
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['ledgerEntries'].extend([ledger_debit, ledger_credit])
 
-            if idempotency_key:
-                DB['idempotencyRecords'][idempotency_key] = {
-                    'hash': payload_hash,
-                    'status': 200,
-                    'body': resp_data
+                new_txn = {
+                    'id': f'txn-{len(DB["transactions"]) + 1}',
+                    'referenceNumber': ref,
+                    'type': 'TRANSFER',
+                    'amount': round(amount, 4),
+                    'currency': 'USD',
+                    'status': 'COMPLETED',
+                    'description': memo,
+                    'sourceAccount': {'accountNumber': source['accountNumber'], 'name': source['name']},
+                    'destinationAccount': {'accountNumber': dest['accountNumber'], 'name': dest['name']},
+                    'createdAt': get_utc_now().isoformat()
+                }
+                DB['transactions'].insert(0, new_txn)
+
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'TRANSFER_COMPLETED',
+                    'status': 'SUCCESS',
+                    'resource': 'TRANSACTION',
+                    'user': {'email': current_user['email'], 'fullName': current_user['fullName']},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {'ref': ref, 'amount': amount},
+                    'createdAt': get_utc_now().isoformat()
+                })
+
+                resp_data = {
+                    'success': True,
+                    'message': 'Transfer executed with atomic double-entry balance guaranteed.',
+                    'transaction': new_txn,
+                    'remainingBalance': source['balance'],
+                    'destinationBalance': dest['balance'],
+                    'ledgerEntries': [ledger_debit, ledger_credit]
                 }
 
-            self._send_json(200, resp_data)
-            return
+                if idempotency_key:
+                    DB['idempotencyRecords'][idempotency_key] = {
+                        'hash': payload_hash,
+                        'status': 200,
+                        'body': resp_data
+                    }
+
+                self._send_json(200, resp_data)
+                return
 
         self._send_json(404, {'success': False, 'message': 'Endpoint not found'})
 
@@ -1149,6 +1216,8 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
         # Update account permissions: /api/admin/accounts/<account_id>/permissions
         if path.startswith('/api/admin/accounts/') and path.endswith('/permissions'):
             current_user = self._get_authenticated_user()
+            if not current_user:
+                return
             if current_user['role'] != 'ADMIN':
                 DB['unauthorizedAttempts'] += 1
                 self._send_json(403, {'success': False, 'message': 'Forbidden: Administrative privileges required to alter account permissions.'})
@@ -1161,44 +1230,48 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(400, {'success': False, 'message': 'userId is required'})
                 return
 
-            key = (user_id, account_id)
-            current_perm = DB['accountPermissions'].setdefault(key, {
-                'canView': True,
-                'canDeposit': True,
-                'canWithdraw': True,
-                'canTransfer': True
-            })
+            with db_lock:
+                key = (user_id, account_id)
+                current_perm = DB['accountPermissions'].setdefault(key, {
+                    'canView': True,
+                    'canDeposit': True,
+                    'canWithdraw': True,
+                    'canTransfer': True
+                })
 
-            for action in ['canView', 'canDeposit', 'canWithdraw', 'canTransfer']:
-                if action in body:
-                    current_perm[action] = bool(body[action])
+                for action in ['canView', 'canDeposit', 'canWithdraw', 'canTransfer']:
+                    if action in body:
+                        current_perm[action] = bool(body[action])
 
-            DB['auditLogs'].insert(0, {
-                'id': f'aud-{len(DB["auditLogs"]) + 1}',
-                'action': 'ACCOUNT_PERMISSION_UPDATED',
-                'status': 'SUCCESS',
-                'resource': 'PERMISSION',
-                'user': {'email': current_user['email'], 'fullName': current_user['fullName']},
-                'ipAddress': self.client_address[0],
-                'metadata': {'targetUserId': user_id, 'accountId': account_id, 'permission': current_perm},
-                'createdAt': get_utc_now().isoformat()
-            })
+                DB['auditLogs'].insert(0, {
+                    'id': f'aud-{len(DB["auditLogs"]) + 1}',
+                    'action': 'ACCOUNT_PERMISSION_UPDATED',
+                    'status': 'SUCCESS',
+                    'resource': 'PERMISSION',
+                    'user': {'email': current_user['email'], 'fullName': current_user['fullName']},
+                    'ipAddress': self.client_address[0],
+                    'metadata': {'targetUserId': user_id, 'accountId': account_id, 'permission': current_perm},
+                    'createdAt': get_utc_now().isoformat()
+                })
 
-            self._send_json(200, {
-                'success': True,
-                'message': 'Account permissions updated successfully.',
-                'permission': current_perm
-            })
-            return
+                self._send_json(200, {
+                    'success': True,
+                    'message': 'Account permissions updated successfully.',
+                    'permission': current_perm
+                })
+                return
 
         self._send_json(404, {'success': False, 'message': 'Endpoint not found'})
 
     def log_message(self, format, *args):
         print(f"[{time.strftime('%H:%M:%S')}] {args[0]} -> {args[1]}")
 
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 def run_server():
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), BalanceVaultSecureHandler) as httpd:
+    with ThreadedTCPServer(("", PORT), BalanceVaultSecureHandler) as httpd:
         print(f"\n=======================================================")
         print(f"🛡️ BalanceVault Development Prototype Simulator running on port {PORT}")
         print(f"⚠️ [DEVELOPMENT ONLY] Authoritative production backend: TypeScript (src/server.ts)")

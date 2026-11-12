@@ -36,3 +36,5 @@ client/node_modules
 *.swo
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
