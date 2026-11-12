@@ -17,10 +17,12 @@ import hashlib
 import hmac
 import secrets
 import threading
+import mimetypes
 from datetime import datetime, timedelta, timezone
 
 PORT = 8000
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), 'public')
+CLIENT_DIST_DIR = os.path.join(os.path.dirname(__file__), 'client', 'dist')
 db_lock = threading.Lock()
 
 def get_utc_now():
@@ -512,14 +514,37 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {'success': True, 'logs': DB['auditLogs']})
             return
 
-        # Serve static UI
-        filepath = os.path.join(PUBLIC_DIR, 'index.html')
-        if os.path.exists(filepath):
+        # Serve static UI & Assets (supporting React client/dist and public fallback)
+        rel_path = path.lstrip('/') or 'index.html'
+
+        target_file = None
+        for candidate_dir in [CLIENT_DIST_DIR, PUBLIC_DIR]:
+            candidate = os.path.abspath(os.path.join(candidate_dir, rel_path))
+            # Security: Prevent directory traversal
+            if candidate.startswith(os.path.abspath(candidate_dir)) and os.path.isfile(candidate):
+                target_file = candidate
+                break
+
+        # If not found directly, and request is an SPA route, fallback to index.html
+        if not target_file:
+            for candidate_dir in [CLIENT_DIST_DIR, PUBLIC_DIR]:
+                idx = os.path.join(candidate_dir, 'index.html')
+                if os.path.isfile(idx):
+                    target_file = idx
+                    break
+
+        if target_file and os.path.isfile(target_file):
+            content_type, _ = mimetypes.guess_type(target_file)
+            if not content_type:
+                content_type = 'text/html; charset=utf-8' if target_file.endswith('.html') else 'application/octet-stream'
+            elif content_type.startswith('text/') or content_type == 'application/javascript':
+                content_type += '; charset=utf-8'
+
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Type', content_type)
             self._send_security_headers()
             self.end_headers()
-            with open(filepath, 'rb') as f:
+            with open(target_file, 'rb') as f:
                 self.wfile.write(f.read())
         else:
             self._send_json(404, {'error': 'Resource not found'})

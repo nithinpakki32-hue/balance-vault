@@ -56,7 +56,7 @@ export function createApp(): Express {
     const start = Date.now();
     res.on('finish', () => {
       const duration = Date.now() - start;
-      if (req.originalUrl !== '/api/health') {
+      if (!req.originalUrl.endsWith('/health')) {
         console.log(`[${req.method}] ${req.originalUrl} -> ${res.statusCode} (${duration}ms)`);
       }
     });
@@ -64,16 +64,16 @@ export function createApp(): Express {
   });
 
   // Health and Readiness checks (bypasses rate-limiting for automated monitoring probes)
-  app.use('/api', healthRoutes);
+  app.use(['/api', '/'], healthRoutes);
 
   // Apply API rate-limiting to all functional routes
-  app.use('/api', apiRateLimiter);
+  app.use(['/api', '/'], apiRateLimiter);
 
-  // API Routes
-  app.use('/api/auth', authRoutes);
-  app.use('/api/accounts', accountRoutes);
-  app.use('/api/transactions', transactionRoutes);
-  app.use('/api/admin', adminRoutes);
+  // API Routes (supports both /api/path and /path for Vercel serverless functions)
+  app.use(['/api/auth', '/auth'], authRoutes);
+  app.use(['/api/accounts', '/accounts'], accountRoutes);
+  app.use(['/api/transactions', '/transactions'], transactionRoutes);
+  app.use(['/api/admin', '/admin'], adminRoutes);
 
   // 404 Handler
   app.use((req, res) => {
