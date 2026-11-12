@@ -11,6 +11,7 @@ export default function handler(req: any, res: any) {
     status: 'HEALTHY',
     service: 'balance-vault-gateway',
     security: 'OWASP_HARDENED',
+    version: 'workflow-v2.0',
     timestamp: new Date().toISOString()
   });
 }
