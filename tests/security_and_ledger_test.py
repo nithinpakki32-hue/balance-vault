@@ -70,8 +70,7 @@ class BalanceVaultSecurityAndLedgerTestSuite(unittest.TestCase):
         status, _, data = request("POST", "/api/auth/register", payload)
         self.assertEqual(status, 201)
         self.assertEqual(data["user"]["role"], "ACCOUNT_HOLDER", "User registration allowed privilege escalation!")
-        self.assertIn("account", data)
-        self.assertTrue(data["account"]["accountNumber"].startswith("BV-CHK-"))
+        self.assertNotIn("account", data, "User registration must NOT create an account automatically!")
 
     def test_04_brute_force_account_lockout(self):
         test_email = f"alex_lockout_{uuid.uuid4().hex[:8]}@balancevault.com"
@@ -109,11 +108,12 @@ class BalanceVaultSecurityAndLedgerTestSuite(unittest.TestCase):
 
     def test_05_password_reset_flow(self):
         test_email = f"reset_user_{uuid.uuid4().hex[:8]}@balancevault.com"
-        request("POST", "/api/auth/register", {
+        reg_status, _, reg_data = request("POST", "/api/auth/register", {
             "email": test_email,
             "fullName": "Reset User",
             "password": "OldPassword123!"
         })
+        self.assertEqual(reg_status, 201, f"Registration failed: {reg_data}")
 
         # Request reset token
         status, _, data = request("POST", "/api/auth/forgot-password", {"email": test_email})
@@ -133,7 +133,7 @@ class BalanceVaultSecurityAndLedgerTestSuite(unittest.TestCase):
             "email": test_email,
             "password": "BrandNewSecurePassword123!"
         })
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 200, f"Login failed: {data}")
         self.assertIn("token", data)
 
     def test_06_double_entry_ledger_deposit(self):

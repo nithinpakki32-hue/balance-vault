@@ -71,11 +71,12 @@ export const api = {
   requestAccount: (payload: { accountName: string; accountType: string; requestedBalance: number; currency?: string; reason?: string }) =>
     request('/account-requests', { method: 'POST', body: JSON.stringify(payload) }),
   getAccountRequests: () => request('/account-requests'),
+  getAdminAccountRequests: () => request('/admin/account-requests'),
   getAccountRequestById: (id: string) => request(`/account-requests/${id}`),
   approveAccountRequest: (id: string, payload?: { remarks?: string }) =>
-    request(`/account-requests/${id}/approve`, { method: 'POST', body: JSON.stringify(payload || {}) }),
+    request(`/admin/account-requests/${id}/approve`, { method: 'POST', body: JSON.stringify(payload || {}) }),
   rejectAccountRequest: (id: string, payload: { remarks?: string; reason?: string }) =>
-    request(`/account-requests/${id}/reject`, { method: 'POST', body: JSON.stringify(payload) }),
+    request(`/admin/account-requests/${id}/reject`, { method: 'POST', body: JSON.stringify(payload) }),
 
   // Transactions with Idempotency Key support
   transfer: (payload: any, idempotencyKey?: string) =>

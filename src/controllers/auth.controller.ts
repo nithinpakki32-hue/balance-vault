@@ -259,9 +259,10 @@ export class AuthController {
       }
 
       const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
-      const accountNumber = `BV-CHK-${Math.floor(100000 + Math.random() * 900000)}`;
 
-      // Execute in atomic transaction
+      // Execute in atomic transaction: Create user profile only.
+      // Financial accounts are NEVER created automatically upon registration.
+      // Members must submit an account opening request for Administrator approval.
       const newUser = await prisma.$transaction(async (tx) => {
         const user = await tx.user.create({
           data: {
@@ -269,28 +270,6 @@ export class AuthController {
             passwordHash,
             fullName: data.fullName,
             role: Role.ACCOUNT_HOLDER, // Role strictly enforced
-          },
-        });
-
-        const account = await tx.account.create({
-          data: {
-            accountNumber,
-            name: `${data.fullName}'s Checking`,
-            type: AccountType.CHECKING,
-            balance: data.initialDeposit,
-            userId: user.id,
-          },
-        });
-
-        // Initialize account-level permissions (Deny transfer & withdrawal by default until verified if desired, or grant basic checking)
-        await tx.accountPermission.create({
-          data: {
-            userId: user.id,
-            accountId: account.id,
-            canView: true,
-            canDeposit: true,
-            canWithdraw: true,
-            canTransfer: true,
           },
         });
 
@@ -307,7 +286,6 @@ export class AuthController {
         metadata: {
           email: newUser.email,
           fullName: newUser.fullName,
-          initialAccountNumber: accountNumber,
         },
       });
 

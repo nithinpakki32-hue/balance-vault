@@ -433,5 +433,188 @@ class PostgresAccountRequestWorkflowTests(unittest.TestCase):
         final_status = self.conn.run('SELECT status FROM "AccountRequest" WHERE id = :id', id=self.__class__.escrow_req_id)[0][0]
         self.assertEqual(final_status, 'APPROVED')
 
+    def test_08_fresh_member_lifecycle_database_verification(self):
+        """Phase 4: Complete database verification of a fresh test member lifecycle.
+        Before approval:
+        - AccountRequest must exist with PENDING status.
+        - No new Account record must exist for this member.
+        - No opening balance must have been credited.
+        - No ledger entries must have been generated.
+        After Admin approval:
+        - AccountRequest must be APPROVED.
+        - Exactly one Account must exist for this member.
+        - The correct member must own that account.
+        - Appropriate permissions must exist.
+        - Audit log must identify the approving administrator.
+        """
+        fresh_user_id = str(uuid.uuid4())
+        fresh_email = f"fresh_member_{uuid.uuid4().hex[:6]}@balancevault.com"
+        fresh_req_id = str(uuid.uuid4())
+        fresh_acc_id = str(uuid.uuid4())
+        fresh_txn_id = str(uuid.uuid4())
+        acc_number = f"BV-CHK-FRESH-{uuid.uuid4().hex[:4].upper()}"
+
+        self.created_req_ids.append(fresh_req_id)
+        self.created_acc_ids.append(fresh_acc_id)
+        self.created_txn_ids.append(fresh_txn_id)
+
+        try:
+            # 1. Create fresh member (USER ONLY - NO ACCOUNT)
+            self.conn.run(
+                'INSERT INTO "User" (id, email, "fullName", "passwordHash", role, "isActive", "createdAt", "updatedAt") '
+                'VALUES (:id, :email, \'Fresh Test Member\', \'dummyhash\', \'ACCOUNT_HOLDER\'::"Role", true, NOW(), NOW())',
+                id=fresh_user_id,
+                email=fresh_email
+            )
+
+            # STEP A: Verify member has ZERO accounts initially
+            initial_member_accounts = self.conn.run('SELECT COUNT(*) FROM "Account" WHERE "userId" = :uid', uid=fresh_user_id)[0][0]
+            self.assertEqual(initial_member_accounts, 0, "Fresh member must start with exactly zero accounts!")
+
+            # 2. Member submits account opening request
+            opening_balance = Decimal('5000.00')
+            self.conn.run(
+                'INSERT INTO "AccountRequest" (id, "userId", "accountName", "accountType", "requestedBalance", currency, reason, status, "createdAt", "updatedAt") '
+                'VALUES (:id, :uid, \'Fresh Operations Account\', \'CHECKING\'::"AccountType", :bal, \'USD\', \'Operating capital for new account holder.\', \'PENDING\'::"AccountRequestStatus", NOW(), NOW())',
+                id=fresh_req_id,
+                uid=fresh_user_id,
+                bal=opening_balance
+            )
+
+            # STEP B: Verify BEFORE APPROVAL state
+            pending_req = self.conn.run('SELECT id, status, "createdAccountId" FROM "AccountRequest" WHERE id = :id', id=fresh_req_id)
+            self.assertEqual(len(pending_req), 1)
+            self.assertEqual(pending_req[0][1], 'PENDING')
+            self.assertIsNone(pending_req[0][2], "Before approval, createdAccountId must be NULL!")
+
+            # Verify no account exists for this member
+            member_accs_before = self.conn.run('SELECT COUNT(*) FROM "Account" WHERE "userId" = :uid', uid=fresh_user_id)[0][0]
+            self.assertEqual(member_accs_before, 0, "Before approval, member must have exactly ZERO accounts!")
+
+            # Verify no ledger entries exist for this member
+            ledger_before = self.conn.run(
+                'SELECT COUNT(*) FROM "LedgerEntry" le '
+                'JOIN "Account" a ON le."accountId" = a.id '
+                'WHERE a."userId" = :uid',
+                uid=fresh_user_id
+            )[0][0]
+            self.assertEqual(ledger_before, 0, "Before approval, member must have ZERO ledger entries!")
+
+            # 3. Admin approves request in atomic transaction
+            self.conn.run('BEGIN')
+
+            # Row lock
+            locked = self.conn.run('SELECT id, status, "requestedBalance" FROM "AccountRequest" WHERE id = :id FOR UPDATE', id=fresh_req_id)
+            self.assertEqual(locked[0][1], 'PENDING')
+
+            # Create Account
+            self.conn.run(
+                'INSERT INTO "Account" (id, "accountNumber", name, type, balance, currency, status, "userId", "createdAt", "updatedAt") '
+                'VALUES (:id, :num, \'Fresh Operations Account\', \'CHECKING\'::"AccountType", :bal, \'USD\', \'ACTIVE\'::"AccountStatus", :uid, NOW(), NOW())',
+                id=fresh_acc_id,
+                num=acc_number,
+                bal=opening_balance,
+                uid=fresh_user_id
+            )
+
+            # Create Permissions
+            perm_id = str(uuid.uuid4())
+            self.conn.run(
+                'INSERT INTO "AccountPermission" (id, "userId", "accountId", "canView", "canDeposit", "canWithdraw", "canTransfer", "createdAt", "updatedAt") '
+                'VALUES (:id, :uid, :aid, true, true, true, true, NOW(), NOW())',
+                id=perm_id,
+                uid=fresh_user_id,
+                aid=fresh_acc_id
+            )
+
+            # Balanced Ledger Entries
+            self.conn.run(
+                'INSERT INTO "Transaction" (id, "referenceNumber", type, amount, fee, currency, status, description, "destinationAccountId", "initiatedById", "createdAt", "updatedAt") '
+                'VALUES (:id, :ref, \'DEPOSIT\'::"TransactionType", :amt, 0.00, \'USD\', \'COMPLETED\'::"TransactionStatus", :desc, :dest, :init, NOW(), NOW())',
+                id=fresh_txn_id,
+                ref=f"DEP-FRESH-{uuid.uuid4().hex[:6].upper()}",
+                amt=opening_balance,
+                desc='Opening balance deposit for fresh member',
+                dest=fresh_acc_id,
+                init=ADMIN_ID
+            )
+            self.conn.run(
+                'INSERT INTO "LedgerEntry" (id, "transactionId", "accountId", "entryType", amount, "balanceAfter", "createdAt") '
+                'VALUES (:id, :tid, :aid, \'CREDIT\'::"LedgerEntryType", :amt, :amt, NOW())',
+                id=str(uuid.uuid4()),
+                tid=fresh_txn_id,
+                aid=fresh_acc_id,
+                amt=opening_balance
+            )
+            self.conn.run(
+                'INSERT INTO "LedgerEntry" (id, "transactionId", "accountId", "entryType", amount, "balanceAfter", "createdAt") '
+                'VALUES (:id, :tid, :aid, \'DEBIT\'::"LedgerEntryType", :amt, 0.00, NOW())',
+                id=str(uuid.uuid4()),
+                tid=fresh_txn_id,
+                aid=CLEARING_POOL_ID,
+                amt=opening_balance
+            )
+
+            # Update request to APPROVED
+            self.conn.run(
+                'UPDATE "AccountRequest" SET '
+                'status = \'APPROVED\'::"AccountRequestStatus", '
+                '"adminRemarks" = \'Approved for operational onboarding\', '
+                '"reviewedById" = :admin, '
+                '"reviewedAt" = NOW(), '
+                '"createdAccountId" = :aid, '
+                '"updatedAt" = NOW() '
+                'WHERE id = :id',
+                admin=ADMIN_ID,
+                aid=fresh_acc_id,
+                id=fresh_req_id
+            )
+
+            # Write Audit Log identifying approving administrator
+            audit_id = str(uuid.uuid4())
+            self.conn.run(
+                'INSERT INTO "AuditLog" (id, action, resource, "resourceId", "userId", "ipAddress", "createdAt") '
+                'VALUES (:id, \'ACCOUNT_REQUEST_APPROVED\', \'ACCOUNT_REQUEST\', :rid, :admin, \'127.0.0.1\', NOW())',
+                id=audit_id,
+                rid=fresh_req_id,
+                admin=ADMIN_ID
+            )
+
+            self.conn.run('COMMIT')
+
+            # STEP C: Verify AFTER APPROVAL state
+            # 1. AccountRequest must be APPROVED
+            approved_row = self.conn.run('SELECT status, "createdAccountId", "reviewedById" FROM "AccountRequest" WHERE id = :id', id=fresh_req_id)
+            self.assertEqual(approved_row[0][0], 'APPROVED')
+            self.assertEqual(approved_row[0][1], fresh_acc_id)
+            self.assertEqual(approved_row[0][2], ADMIN_ID)
+
+            # 2. Exactly one Account must exist for this member
+            member_accounts_after = self.conn.run('SELECT id, "accountNumber", "userId", balance, status FROM "Account" WHERE "userId" = :uid', uid=fresh_user_id)
+            self.assertEqual(len(member_accounts_after), 1, "Exactly one Account must exist for member after approval!")
+            self.assertEqual(member_accounts_after[0][0], fresh_acc_id)
+            self.assertEqual(member_accounts_after[0][2], fresh_user_id)
+            self.assertEqual(Decimal(str(member_accounts_after[0][3])), opening_balance)
+            self.assertEqual(member_accounts_after[0][4], 'ACTIVE')
+
+            # 3. Appropriate permissions must exist
+            perms = self.conn.run('SELECT "canView", "canDeposit", "canWithdraw", "canTransfer" FROM "AccountPermission" WHERE "userId" = :uid AND "accountId" = :aid', uid=fresh_user_id, aid=fresh_acc_id)
+            self.assertEqual(len(perms), 1)
+            self.assertTrue(perms[0][0] and perms[0][1] and perms[0][2] and perms[0][3])
+
+            # 4. Audit log must identify approving administrator
+            audit_entry = self.conn.run('SELECT action, "userId" FROM "AuditLog" WHERE id = :id', id=audit_id)
+            self.assertEqual(len(audit_entry), 1)
+            self.assertEqual(audit_entry[0][0], 'ACCOUNT_REQUEST_APPROVED')
+            self.assertEqual(audit_entry[0][1], ADMIN_ID)
+
+        finally:
+            # Clean up fresh user and audit entry
+            try:
+                self.conn.run('DELETE FROM "AuditLog" WHERE "resourceId" = :rid', rid=fresh_req_id)
+                self.conn.run('DELETE FROM "User" WHERE id = :id', id=fresh_user_id)
+            except Exception:
+                pass
+
 if __name__ == '__main__':
     unittest.main()

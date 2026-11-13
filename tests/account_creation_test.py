@@ -21,17 +21,26 @@ def generate_totp(secret_hex: str) -> str:
 class AccountCreationSecurityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # 1. Login as Admin
-        totp = generate_totp('3132333435363738393031323334353637383930')
-        req = urllib.request.Request(
-            f'{BASE_URL}/api/auth/login',
-            data=json.dumps({'email': 'admin@balancevault.com', 'password': 'Admin@123', 'mfaCode': totp}).encode(),
-            headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
-            cls.admin_token = data['token']
-            cls.admin_id = data['user']['id']
+        # 1. Login as Admin with TOTP replay prevention handling
+        for attempt in range(3):
+            totp = generate_totp('3132333435363738393031323334353637383930')
+            req = urllib.request.Request(
+                f'{BASE_URL}/api/auth/login',
+                data=json.dumps({'email': 'admin@balancevault.com', 'password': 'Admin@123', 'mfaCode': totp}).encode(),
+                headers={'Content-Type': 'application/json'}
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    data = json.loads(resp.read().decode())
+                    cls.admin_token = data['token']
+                    cls.admin_id = data['user']['id']
+                    break
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt < 2:
+                    rem = 31 - (int(time.time()) % 30)
+                    time.sleep(rem)
+                else:
+                    raise
 
         # 2. Login as Account Holder
         req = urllib.request.Request(

@@ -439,8 +439,8 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(401, {'success': False, 'message': 'Unauthorized. Authentication token is invalid, forged, or expired.'})
             return None
 
-        # For test runner without explicit token
-        if self.headers.get('X-Test-Runner') == 'true' and not auth_header:
+        # Local test runner loopback authentication only
+        if self.client_address[0] in ('127.0.0.1', '::1') and self.headers.get('X-Test-Runner') == 'true' and not auth_header:
             return DB['users'][0]
 
         # Missing token in public / external request
@@ -532,7 +532,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
-        if path == '/api/accounts':
+        if path in ('/api/accounts', '/accounts'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
@@ -543,10 +543,15 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {'success': True, 'accounts': accounts})
             return
 
-        if path == '/api/account-requests':
+        if path in ('/api/account-requests', '/account-requests', '/api/admin/account-requests', '/admin/account-requests'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
+
+            if ('admin/account-requests' in path) and current_user['role'] not in ('ADMIN', 'AUDITOR'):
+                self._send_json(403, {'success': False, 'message': 'Permission denied: Administrative privileges required.'})
+                return
+
             is_privileged = current_user['role'] in ('ADMIN', 'AUDITOR')
             raw_reqs = DB['accountRequests'] if is_privileged else [r for r in DB['accountRequests'] if r.get('userId') == current_user['id']]
             populated = []
@@ -562,11 +567,13 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {'success': True, 'requests': populated})
             return
 
-        if path.startswith('/api/account-requests/') and not path.endswith('/approve') and not path.endswith('/reject'):
+        # Single request fetch
+        clean_path = path[4:] if path.startswith('/api') else path
+        if (clean_path.startswith('/account-requests/') or clean_path.startswith('/admin/account-requests/')) and not clean_path.endswith('/approve') and not clean_path.endswith('/reject'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
-            req_id = path.split('/api/account-requests/')[1]
+            req_id = clean_path.split('/')[-1]
             target = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
             if not target:
                 self._send_json(404, {'success': False, 'message': 'Account request not found.'})
@@ -740,7 +747,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             p_hash, p_salt = hash_password(password)
-            new_user_id = f'usr-user-{int(time.time())}'
+            new_user_id = f'usr-user-{int(time.time() * 1000)}-{secrets.token_hex(4)}'
             new_user = {
                 'id': new_user_id,
                 'email': email,
@@ -754,33 +761,12 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 'mfaEnabled': False,
                 'mfaSecret': None,
                 'createdAt': get_utc_now().isoformat(),
-                'accounts': 1
+                'accounts': 0
             }
             DB['users'].append(new_user)
 
-            # Auto-provision primary checking account
-            acc_num = f"BV-CHK-{secrets.randbelow(900000) + 100000}"
-            new_acc_id = f"acc-{int(time.time())}"
-            new_acc = {
-                'id': new_acc_id,
-                'userId': new_user_id,
-                'accountNumber': acc_num,
-                'name': f"{full_name}'s Checking Account",
-                'type': 'CHECKING',
-                'balance': 0.00,
-                'currency': 'USD',
-                'status': 'ACTIVE',
-                'createdAt': get_utc_now().isoformat()
-            }
-            DB['accounts'].append(new_acc)
-
-            # Grant full account-holder permissions
-            DB['accountPermissions'][(new_user_id, new_acc_id)] = {
-                'canView': True,
-                'canDeposit': True,
-                'canWithdraw': True,
-                'canTransfer': True
-            }
+            # Security: Financial accounts are NEVER auto-provisioned upon registration.
+            # Members must submit an AccountRequest for Administrator review and approval.
 
             token = f"bv-sec-{secrets.token_urlsafe(32)}"
             DB['sessions'][token] = new_user_id
@@ -800,8 +786,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 'success': True,
                 'message': 'Registration completed. Welcome to BalanceVault.',
                 'token': token,
-                'user': user_safe,
-                'account': new_acc
+                'user': user_safe
             })
             return
 
@@ -998,7 +983,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # 5.5 OPEN NEW ACCOUNT (ATOMIC DOUBLE-ENTRY + ROLE GOVERNANCE)
-        if path == '/api/accounts':
+        if path in ('/api/accounts', '/accounts'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
@@ -1130,7 +1115,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         # 5.6 SUBMIT ACCOUNT OPENING REQUEST
-        if path == '/api/account-requests':
+        if path in ('/api/account-requests', '/account-requests'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
@@ -1140,6 +1125,14 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(403, {
                     'success': False,
                     'message': 'Permission denied: Auditor is strictly read-only and cannot submit account requests.'
+                })
+                return
+
+            # Reject direct manipulation of request status
+            if body.get('status') and body.get('status') != 'PENDING':
+                self._send_json(400, {
+                    'success': False,
+                    'message': 'Modifying request status directly is strictly prohibited. Requests always initialize as PENDING.'
                 })
                 return
 
@@ -1206,7 +1199,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         # 5.7 APPROVE ACCOUNT REQUEST (ADMIN ONLY + SELF-APPROVAL PROHIBITION + ATOMIC)
-        if path.startswith('/api/account-requests/') and path.endswith('/approve'):
+        if ('/account-requests/' in path) and path.endswith('/approve'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
@@ -1219,7 +1212,10 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 })
                 return
 
-            req_id = path.split('/api/account-requests/')[1].split('/approve')[0]
+            if '/admin/account-requests/' in path:
+                req_id = path.split('/admin/account-requests/')[1].split('/approve')[0]
+            else:
+                req_id = path.split('/account-requests/')[1].split('/approve')[0]
             with db_lock:
                 target_req = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
                 if not target_req:
@@ -1346,7 +1342,7 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         # 5.8 REJECT ACCOUNT REQUEST (ADMIN ONLY)
-        if path.startswith('/api/account-requests/') and path.endswith('/reject'):
+        if ('/account-requests/' in path) and path.endswith('/reject'):
             current_user = self._get_authenticated_user()
             if not current_user:
                 return
@@ -1359,7 +1355,10 @@ class BalanceVaultSecureHandler(http.server.BaseHTTPRequestHandler):
                 })
                 return
 
-            req_id = path.split('/api/account-requests/')[1].split('/reject')[0]
+            if '/admin/account-requests/' in path:
+                req_id = path.split('/admin/account-requests/')[1].split('/reject')[0]
+            else:
+                req_id = path.split('/account-requests/')[1].split('/reject')[0]
             with db_lock:
                 target_req = next((r for r in DB['accountRequests'] if r['id'] == req_id), None)
                 if not target_req:

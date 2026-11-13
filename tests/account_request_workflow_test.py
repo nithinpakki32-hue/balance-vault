@@ -361,5 +361,70 @@ class AccountRequestWorkflowTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 403)
         self.assertIn('Self-approval prohibited', json.loads(ctx.exception.read().decode())['message'])
 
+    def test_11_member_attempts_to_modify_status_through_body(self):
+        """Scenario 8: Member attempts to modify status through the request body: rejected with HTTP 400."""
+        payload = {
+            'accountName': 'Illegal Status Escalation Test',
+            'accountType': 'CHECKING',
+            'requestedBalance': 1000.00,
+            'status': 'APPROVED'
+        }
+        req = urllib.request.Request(
+            f'{BASE_URL}/api/account-requests',
+            data=json.dumps(payload).encode(),
+            headers={'Authorization': f'Bearer {self.user_token}', 'Content-Type': 'application/json'}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req)
+        self.assertEqual(ctx.exception.code, 400)
+        body = json.loads(ctx.exception.read().decode())
+        self.assertIn('strictly prohibited', body['message'])
+
+    def test_12_auditor_attempts_direct_account_creation(self):
+        """Scenario 4: Auditor attempts direct account creation: HTTP 403."""
+        payload = {
+            'name': 'Auditor Direct Account',
+            'type': 'CHECKING',
+            'initialBalance': 1000.00
+        }
+        req = urllib.request.Request(
+            f'{BASE_URL}/api/accounts',
+            data=json.dumps(payload).encode(),
+            headers={'Authorization': f'Bearer {self.auditor_token}', 'Content-Type': 'application/json'}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req)
+        self.assertEqual(ctx.exception.code, 403)
+        body = json.loads(ctx.exception.read().decode())
+        self.assertIn('Auditor', body['message'])
+
+    def test_13_admin_routes_with_admin_prefix(self):
+        """Verify that /admin/account-requests and /admin/account-requests/:id/approve work."""
+        submit_req = urllib.request.Request(
+            f'{BASE_URL}/account-requests',
+            data=json.dumps({'accountName': 'Admin Prefix Routing Test', 'accountType': 'CHECKING', 'requestedBalance': 500}).encode(),
+            headers={'Authorization': f'Bearer {self.user_token}', 'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(submit_req) as resp:
+            self.assertEqual(resp.status, 201)
+            req_id = json.loads(resp.read().decode())['requestId']
+
+        review_req = urllib.request.Request(
+            f'{BASE_URL}/admin/account-requests',
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        with urllib.request.urlopen(review_req) as resp:
+            self.assertEqual(resp.status, 200)
+
+        approve_req = urllib.request.Request(
+            f'{BASE_URL}/admin/account-requests/{req_id}/approve',
+            data=json.dumps({'remarks': 'Admin prefix approval verified'}).encode(),
+            headers={'Authorization': f'Bearer {self.admin_token}', 'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(approve_req) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode())
+            self.assertTrue(data['success'])
+
 if __name__ == '__main__':
     unittest.main()

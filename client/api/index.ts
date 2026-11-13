@@ -528,43 +528,8 @@ export default async function handler(req: any, res: any) {
     };
     state.users.push(newUser);
 
-    const accNum = `BV-CHK-${Math.floor(100000 + Math.random() * 900000)}`;
-    const newAcc: Account = {
-      id: `acc-${Date.now()}`,
-      userId: newUser.id,
-      accountNumber: accNum,
-      name: `${fullName}'s Checking`,
-      type: 'CHECKING',
-      balance: initialDeposit,
-      currency: 'USD',
-      status: 'ACTIVE',
-      createdAt: new Date().toISOString(),
-    };
-    state.accounts.push(newAcc);
-
-    if (initialDeposit > 0) {
-      const ref = `INIT-DEP-${accNum}`;
-      state.ledgerEntries.push(
-        {
-          id: `led-${state.ledgerEntries.length + 1}`,
-          transactionRef: ref,
-          accountId: newAcc.id,
-          accountNumber: newAcc.accountNumber,
-          type: 'CREDIT',
-          amount: initialDeposit,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: `led-${state.ledgerEntries.length + 2}`,
-          transactionRef: ref,
-          accountId: 'acc-clearing-ext',
-          accountNumber: 'BV-EXT-CLEARING',
-          type: 'DEBIT',
-          amount: initialDeposit,
-          createdAt: new Date().toISOString(),
-        }
-      );
-    }
+    // Financial accounts are NEVER auto-provisioned upon registration.
+    // Members must submit an AccountRequest for Administrator approval.
 
     const jwtToken = signJwt({ userId: newUser.id, email: newUser.email, role: newUser.role });
     state.sessions.set(jwtToken, newUser.id);
@@ -610,7 +575,7 @@ export default async function handler(req: any, res: any) {
   }
 
   // 7. Accounts List and Creation
-  if (path === '/api/accounts') {
+  if (path === '/api/accounts' || path === '/accounts') {
     if (req.method === 'GET') {
       if (!currentUser) {
         return res.status(401).json({
@@ -757,13 +722,22 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ success: true, account: acc });
   }
 
-  // Account Requests Workflow
-  if (path === '/api/account-requests') {
+  // Account Requests Workflow (Supports /account-requests, /api/account-requests, /admin/account-requests, /api/admin/account-requests)
+  if (
+    path === '/api/account-requests' ||
+    path === '/account-requests' ||
+    path === '/api/admin/account-requests' ||
+    path === '/admin/account-requests'
+  ) {
     if (!currentUser) {
       return res.status(401).json({ success: false, message: 'Unauthorized. Authentication token is missing or expired.' });
     }
 
     if (req.method === 'GET') {
+      if ((path.includes('/admin/account-requests')) && currentUser.role !== 'ADMIN' && currentUser.role !== 'AUDITOR') {
+        return res.status(403).json({ success: false, message: 'Administrative privileges required.' });
+      }
+
       const isPrivileged = currentUser.role === 'ADMIN' || currentUser.role === 'AUDITOR';
       const rawRequests = isPrivileged
         ? state.accountRequests
@@ -790,6 +764,14 @@ export default async function handler(req: any, res: any) {
         return res.status(403).json({
           success: false,
           message: 'Permission denied: Auditor is strictly read-only and cannot submit account requests.',
+        });
+      }
+
+      // Check if caller attempted to inject an unauthorized status
+      if (body.status && body.status !== 'PENDING') {
+        return res.status(400).json({
+          success: false,
+          message: 'Modifying request status directly is strictly prohibited. Requests always initialize as PENDING.',
         });
       }
 
@@ -843,7 +825,7 @@ export default async function handler(req: any, res: any) {
   }
 
   // Account Request Review Actions (Approve / Reject)
-  const reqActionMatch = path.match(/^\/api\/account-requests\/([a-zA-Z0-9_-]+)\/(approve|reject)$/);
+  const reqActionMatch = path.match(/^(?:\/api)?(?:\/admin)?\/account-requests\/([a-zA-Z0-9_-]+)\/(approve|reject)$/);
   if (reqActionMatch && req.method === 'POST') {
     if (!currentUser) {
       return res.status(401).json({ success: false, message: 'Unauthorized. Authentication token is missing or expired.' });
@@ -996,7 +978,7 @@ export default async function handler(req: any, res: any) {
   }
 
   // Single Account Request by ID
-  const singleReqMatch = path.match(/^\/api\/account-requests\/([a-zA-Z0-9_-]+)$/);
+  const singleReqMatch = path.match(/^(?:\/api)?(?:\/admin)?\/account-requests\/([a-zA-Z0-9_-]+)$/);
   if (singleReqMatch && req.method === 'GET') {
     if (!currentUser) {
       return res.status(401).json({ success: false, message: 'Unauthorized.' });
