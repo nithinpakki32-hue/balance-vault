@@ -86,7 +86,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             className="px-3.5 py-2 rounded-lg border border-slate-700 hover:border-slate-600 bg-slate-800/80 hover:bg-slate-800 text-xs font-semibold text-slate-200 transition-all flex items-center space-x-1.5"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>{isAdmin ? 'Open Account' : 'Request New Account'}</span>
+            <span>Open Account</span>
           </button>
 
           <button

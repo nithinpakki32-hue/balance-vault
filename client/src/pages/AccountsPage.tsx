@@ -98,7 +98,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
           className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition-all shadow-sm shadow-cyan-500/20 flex items-center space-x-1.5 self-start sm:self-auto"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>{isAdmin ? 'Open Account' : 'Request New Account'}</span>
+          <span>Open Account</span>
         </button>
       </div>
 

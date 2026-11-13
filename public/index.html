@@ -1510,9 +1510,9 @@
         if (descEl) descEl.innerText = 'Direct administrative account provisioning';
         if (submitBtn) submitBtn.innerText = 'Open Account (Admin Direct)';
       } else {
-        if (titleEl) titleEl.innerText = 'Request New Vault Account';
+        if (titleEl) titleEl.innerText = 'Open New Vault Account';
         if (descEl) descEl.innerText = 'Submit an account opening proposal for Administrator approval';
-        if (submitBtn) submitBtn.innerText = 'Submit Account Request';
+        if (submitBtn) submitBtn.innerText = 'Open Account';
       }
 
       document.getElementById('modal-create-account').classList.remove('hidden');
@@ -1553,9 +1553,8 @@
         // DO NOT CREATE LEDGER ENTRIES
         // DO NOT CREDIT THE REQUESTED OPENING BALANCE
         // =========================================================================
-        if (reason.length < 5) {
-          alert('Please specify a business reason for opening this account (at least 5 characters).');
-          return;
+        if (reason.length < 2) {
+          reason = 'Business liquidity and operational vault account';
         }
 
         const reqId = 'req-' + Date.now();

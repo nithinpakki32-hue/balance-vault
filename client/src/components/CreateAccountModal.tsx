@@ -45,10 +45,7 @@ export const CreateAccountModal: React.FC<CreateAccountModalProps> = ({
       return;
     }
 
-    if (!isAdmin && reason.trim().length < 5) {
-      setError('Please provide a reason for opening this account (at least 5 characters).');
-      return;
-    }
+    const requestReason = reason.trim() || 'Standard operational vault account';
 
     setIsSubmitting(true);
     try {
@@ -72,7 +69,7 @@ export const CreateAccountModal: React.FC<CreateAccountModalProps> = ({
           accountType: type,
           requestedBalance: numBal,
           currency,
-          reason: reason.trim(),
+          reason: requestReason,
         });
 
         if (response.success) {
@@ -96,12 +93,12 @@ export const CreateAccountModal: React.FC<CreateAccountModalProps> = ({
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-slate-100">
-              {isAdmin ? 'Open New Vault Account' : 'Request New Vault Account'}
+              Open New Vault Account
             </h3>
             <p className="text-xs text-slate-400">
               {isAdmin
-                ? 'Directly provision a vault account with atomic double-entry ledger'
-                : 'Submit an account opening request for administrator review'}
+                ? 'Direct administrative account provisioning with double-entry ledger'
+                : 'Account opening proposal will be submitted to Administrator for mandatory review and approval'}
             </p>
           </div>
           <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
@@ -211,12 +208,8 @@ export const CreateAccountModal: React.FC<CreateAccountModalProps> = ({
               {isAdmin ? <Plus className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
               <span>
                 {isSubmitting
-                  ? isAdmin
-                    ? 'Provisioning...'
-                    : 'Submitting Request...'
-                  : isAdmin
-                  ? 'Open Account'
-                  : 'Submit Account Request'}
+                  ? (isAdmin ? 'Provisioning...' : 'Submitting Request...')
+                  : 'Open Account'}
               </span>
             </button>
           </div>
