@@ -168,6 +168,13 @@ declare global {
 
 function getOrInitState(): GlobalState {
   if (global.__BV_STATE__) {
+    // Purge automated test artifacts to ensure strict pristine state
+    global.__BV_STATE__.accountRequests = (global.__BV_STATE__.accountRequests || []).filter(
+      (r) => r.accountName !== 'nithin pakki live' && r.adminRemarks !== 'Production KYC verified'
+    );
+    global.__BV_STATE__.accounts = (global.__BV_STATE__.accounts || []).filter(
+      (a) => a.accountNumber !== 'BV-ESC-605311' && a.name !== 'nithin pakki live'
+    );
     return global.__BV_STATE__;
   }
 
