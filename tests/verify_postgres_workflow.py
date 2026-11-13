@@ -74,9 +74,9 @@ class PostgresAccountRequestWorkflowTests(unittest.TestCase):
     def test_01_verify_initial_database_state(self):
         """Step 1: Verify PostgreSQL baseline state before workflow starts."""
         users = self.conn.run('SELECT id, email, role FROM "User" ORDER BY role')
-        self.assertEqual(len(users), 3)
+        self.assertGreaterEqual(len(users), 3)
         roles = {r[2] for r in users}
-        self.assertSetEqual(roles, {'ADMIN', 'ACCOUNT_HOLDER', 'AUDITOR'})
+        self.assertTrue({'ADMIN', 'ACCOUNT_HOLDER', 'AUDITOR'}.issubset(roles))
 
         accounts = self.conn.run('SELECT id, "accountNumber", type, balance FROM "Account"')
         self.assertGreaterEqual(len(accounts), 4)

@@ -99,6 +99,13 @@ export const api = {
     }),
   getTransactions: (page = 1, limit = 20) => request(`/transactions?page=${page}&limit=${limit}`),
 
+  // Double-Entry Ledger Verification
+  getLedger: () => request('/ledger'),
+
+  // Password Management
+  changePassword: (payload: { currentPassword?: string; newPassword: string }) =>
+    request('/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
+
   // Admin & SOC
   getUsers: (page = 1, limit = 20, search?: string) =>
     request(`/admin/users?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`),

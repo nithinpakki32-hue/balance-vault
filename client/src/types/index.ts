@@ -139,3 +139,33 @@ export interface AccountRequest {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface LedgerEntry {
+  id: string;
+  transactionRef: string;
+  accountId: string;
+  type: 'DEBIT' | 'CREDIT';
+  amount: number;
+  currency: string;
+  description?: string;
+  createdAt: string;
+}
+
+export interface LedgerResponse {
+  success: boolean;
+  balanced: boolean;
+  totalDebits: number;
+  totalCredits: number;
+  entryCount: number;
+  entries: LedgerEntry[];
+}
+
+export interface NotificationItem {
+  id: string;
+  title: string;
+  message: string;
+  type: 'info' | 'success' | 'warning' | 'alert';
+  timestamp: string;
+  read: boolean;
+  actionTab?: string;
+}

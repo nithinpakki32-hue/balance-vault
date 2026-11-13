@@ -26,6 +26,7 @@ interface DashboardPageProps {
   onOpenCreateAccount: () => void;
   onRefresh: () => void;
   isLoading: boolean;
+  onNavigateTab?: (tab: string) => void;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -35,6 +36,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onOpenCreateAccount,
   onRefresh,
   isLoading,
+  onNavigateTab,
 }) => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
@@ -136,7 +138,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
               Vault Accounts
             </h2>
-            <span className="text-xs text-slate-400 font-mono">{accounts.length} Total</span>
+            {onNavigateTab ? (
+              <button
+                onClick={() => onNavigateTab('accounts')}
+                className="text-xs text-cyan-400 hover:text-cyan-300 font-mono font-medium transition-colors"
+              >
+                View all ({accounts.length}) →
+              </button>
+            ) : (
+              <span className="text-xs text-slate-400 font-mono">{accounts.length} Total</span>
+            )}
           </div>
 
           <div className="space-y-3">
@@ -178,7 +189,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
               Live Ledger Activity
             </h2>
-            <span className="text-xs text-slate-400 font-mono">Recent records</span>
+            {onNavigateTab ? (
+              <button
+                onClick={() => onNavigateTab('transactions')}
+                className="text-xs text-cyan-400 hover:text-cyan-300 font-mono font-medium transition-colors"
+              >
+                View all transactions →
+              </button>
+            ) : (
+              <span className="text-xs text-slate-400 font-mono">Recent records</span>
+            )}
           </div>
 
           <div className="border border-slate-800 rounded-xl overflow-hidden bg-[#0f172a]/60">
@@ -247,9 +267,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <FileText className="w-4 h-4 text-cyan-400" />
               <span>{isAdmin ? 'Recent Account Requests' : 'My Account Opening Requests'}</span>
             </h2>
-            <span className="text-xs text-slate-400 font-mono">
-              {myRequests.filter((r) => r.status === 'PENDING').length} pending review
-            </span>
+            {onNavigateTab ? (
+              <button
+                onClick={() => onNavigateTab('requests')}
+                className="text-xs text-amber-400 hover:text-amber-300 font-mono font-medium transition-colors"
+              >
+                View all ({myRequests.filter((r) => r.status === 'PENDING').length} pending) →
+              </button>
+            ) : (
+              <span className="text-xs text-slate-400 font-mono">
+                {myRequests.filter((r) => r.status === 'PENDING').length} pending review
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

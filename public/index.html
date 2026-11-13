@@ -86,6 +86,18 @@
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>
               <span>Transactions</span>
             </button>
+            <button onclick="switchTab('ledger')" id="btn-tab-ledger" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+              <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+              <span>Double-Entry Ledger</span>
+            </button>
+            <button onclick="switchTab('reports')" id="btn-tab-reports" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+              <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+              <span>Financial Reports</span>
+            </button>
+            <button onclick="switchTab('profile')" id="btn-tab-profile" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+              <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+              <span>User Profile</span>
+            </button>
           </nav>
         </div>
 
@@ -554,6 +566,139 @@
           </table>
         </div>
       </div>
+
+      <!-- ================= TAB: DOUBLE-ENTRY LEDGER ================= -->
+      <div id="tab-ledger" class="hidden space-y-6">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center space-x-2">
+              <h1 class="text-2xl font-bold tracking-tight text-slate-100">Financial Double-Entry Ledger</h1>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded uppercase font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">ACID Compliant</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-1">Immutable pairing log where Total Debits must exactly equal Total Credits (Σ Debits ≡ Σ Credits)</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button onclick="renderLedger()" class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-200">↻ Refresh</button>
+            <button onclick="exportLedgerCSV()" class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-200">Export CSV</button>
+          </div>
+        </div>
+
+        <div id="ledger-invariant-banner" class="p-4 rounded-xl border bg-emerald-950/20 border-emerald-500/30 text-emerald-300 flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div class="p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold">✓</div>
+            <div>
+              <h3 class="text-sm font-bold">Double-Entry Invariant Verified</h3>
+              <p id="ledger-invariant-text" class="text-xs text-slate-400 font-mono">Σ Debits ($1,007,500.00) = Σ Credits ($1,007,500.00) • Zero-Variance</p>
+            </div>
+          </div>
+          <span class="text-xs font-mono text-emerald-400 font-semibold px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30">Invariant Zero-Variance</span>
+        </div>
+
+        <div class="border border-slate-800 rounded-xl overflow-hidden bg-[#0f172a]/60">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-900/80 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+              <tr>
+                <th class="py-3 px-4">Entry ID</th>
+                <th class="py-3 px-4">Timestamp</th>
+                <th class="py-3 px-4">Transaction Ref</th>
+                <th class="py-3 px-4">Account ID</th>
+                <th class="py-3 px-4">Type</th>
+                <th class="py-3 px-4 text-right">Amount</th>
+                <th class="py-3 px-4">Description</th>
+              </tr>
+            </thead>
+            <tbody id="ledger-table-body" class="divide-y divide-slate-800/60 font-mono">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ================= TAB: FINANCIAL REPORTS ================= -->
+      <div id="tab-reports" class="hidden space-y-6">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center space-x-2">
+              <h1 class="text-2xl font-bold tracking-tight text-slate-100">Financial Reports & Portfolio Analytics</h1>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded uppercase font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Executive</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-1">Aggregated liquidity breakdown, transaction velocities, and export tools</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button onclick="exportReportsCSV()" class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-200">Export CSV</button>
+            <button onclick="window.print()" class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-200">Print</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70">
+            <span class="text-xs uppercase text-slate-400 font-semibold">Consolidated Portfolio</span>
+            <div id="report-total-assets" class="text-2xl font-bold font-mono text-cyan-400 mt-2">$1,060,420.50</div>
+            <p class="text-xs text-slate-500 mt-1">Total active liquid assets</p>
+          </div>
+          <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70">
+            <span class="text-xs uppercase text-slate-400 font-semibold">Total Inbound Deposits</span>
+            <div id="report-total-inflow" class="text-2xl font-bold font-mono text-emerald-400 mt-2">+$1,000,000.00</div>
+            <p class="text-xs text-slate-500 mt-1">Primary clearing credits</p>
+          </div>
+          <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70">
+            <span class="text-xs uppercase text-slate-400 font-semibold">Total Outflow & Transfers</span>
+            <div id="report-total-outflow" class="text-2xl font-bold font-mono text-slate-200 mt-2">$7,500.00</div>
+            <p class="text-xs text-slate-500 mt-1">Internal inter-account movement</p>
+          </div>
+        </div>
+
+        <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70 space-y-4">
+          <h3 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Asset Allocation by Account Type</h3>
+          <div id="report-types-container" class="space-y-3">
+            <!-- Rendered via JS -->
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= TAB: USER PROFILE ================= -->
+      <div id="tab-profile" class="hidden space-y-6">
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="text-2xl font-bold tracking-tight text-slate-100">User Profile & Identity Security</h1>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded uppercase font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">Verified</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-1">Credentials, role authorization, and multi-factor session security</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70 space-y-4">
+            <h3 class="text-base font-bold text-slate-200">Active Identity</h3>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between py-1 border-b border-slate-800"><span class="text-slate-400">Full Name</span><span id="profile-name" class="font-semibold text-slate-200">System Administrator</span></div>
+              <div class="flex justify-between py-1 border-b border-slate-800"><span class="text-slate-400">Email Address</span><span id="profile-email" class="font-mono text-slate-300">admin@balancevault.com</span></div>
+              <div class="flex justify-between py-1 border-b border-slate-800"><span class="text-slate-400">RBAC Role</span><span id="profile-role" class="font-mono text-rose-400 font-bold">ADMIN</span></div>
+              <div class="flex justify-between py-1"><span class="text-slate-400">MFA Status</span><span class="text-emerald-400 font-semibold">Hardware Key Active</span></div>
+            </div>
+            <button onclick="openPasswordResetModal()" class="w-full py-2 px-4 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition-all">
+              Change Account Password
+            </button>
+          </div>
+
+          <div class="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/70 space-y-4">
+            <h3 class="text-base font-bold text-slate-200">Platform Security Defenses</h3>
+            <div class="space-y-3 text-xs">
+              <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between items-center">
+                <span>Brute Force Lockout Guard</span>
+                <span class="text-emerald-400 font-mono font-bold">Active</span>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between items-center">
+                <span>Account Approval Flow</span>
+                <span class="text-emerald-400 font-mono font-bold">Mandatory</span>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between items-center">
+                <span>Double-Entry Invariant Check</span>
+                <span class="text-emerald-400 font-mono font-bold">Zero-Variance</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -735,6 +880,14 @@
         { id: 'txn-1', ref: 'DEP-173132001', type: 'DEPOSIT', amount: 1000000.00, from: '—', to: 'BV-TREASURY-001', status: 'COMPLETED', time: 'Today 10:15 AM' },
         { id: 'txn-2', ref: 'TXN-173132042', type: 'TRANSFER', amount: 2500.00, from: 'BV-TREASURY-001', to: 'BV-CHK-100293', status: 'COMPLETED', time: 'Today 11:20 AM' },
         { id: 'txn-3', ref: 'TXN-173132089', type: 'TRANSFER', amount: 5000.00, from: 'BV-CHK-100293', to: 'BV-SAV-883012', status: 'COMPLETED', time: 'Today 01:45 PM' }
+      ],
+      ledgerEntries: [
+        { id: 'led-1', ref: 'DEP-173132001', account: 'acc-clearing-ext', type: 'DEBIT', amount: 1000000.00, time: '2026-11-12 10:15:00', desc: 'External clearing deposit' },
+        { id: 'led-2', ref: 'DEP-173132001', account: 'BV-TREASURY-001', type: 'CREDIT', amount: 1000000.00, time: '2026-11-12 10:15:00', desc: 'Treasury reserve allocation' },
+        { id: 'led-3', ref: 'TXN-173132042', account: 'BV-TREASURY-001', type: 'DEBIT', amount: 2500.00, time: '2026-11-12 11:20:00', desc: 'Disbursement to Checking' },
+        { id: 'led-4', ref: 'TXN-173132042', account: 'BV-CHK-100293', type: 'CREDIT', amount: 2500.00, time: '2026-11-12 11:20:00', desc: 'Inbound transfer' },
+        { id: 'led-5', ref: 'TXN-173132089', account: 'BV-CHK-100293', type: 'DEBIT', amount: 5000.00, time: '2026-11-12 13:45:00', desc: 'High-Yield allocation' },
+        { id: 'led-6', ref: 'TXN-173132089', account: 'BV-SAV-883012', type: 'CREDIT', amount: 5000.00, time: '2026-11-12 13:45:00', desc: 'High-Yield deposit' }
       ],
       auditLogs: [
         { id: 'aud-1', action: 'SYSTEM_BOOTSTRAP', status: 'SUCCESS', resource: 'SYSTEM', actor: 'admin@balancevault.com', ip: '127.0.0.1', time: '2026-11-12 10:00:00' },
@@ -1053,7 +1206,10 @@
     }
 
     function switchTab(tabId) {
-      ['dashboard', 'accounts', 'transactions', 'admin-security', 'admin-audit', 'admin-users', 'admin-requests'].forEach(t => {
+      if (tabId === 'requests') tabId = 'admin-requests';
+      if (tabId === 'security') tabId = 'admin-security';
+      const allTabs = ['dashboard', 'accounts', 'transactions', 'admin-security', 'admin-audit', 'admin-users', 'admin-requests', 'ledger', 'reports', 'profile'];
+      allTabs.forEach(t => {
         const el = document.getElementById('tab-' + t);
         const btn = document.getElementById('btn-tab-' + t);
         if (el) el.classList.toggle('hidden', t !== tabId);
@@ -1065,7 +1221,118 @@
           }
         }
       });
+      if (tabId === 'ledger') renderLedger();
+      if (tabId === 'reports') renderReports();
+      if (tabId === 'profile') renderProfile();
+      if (window.location.hash !== '#' + tabId) {
+        window.location.hash = tabId;
+      }
     }
+
+    function renderLedger() {
+      const tbody = document.getElementById('ledger-table-body');
+      if (!tbody) return;
+      const totalDebits = state.ledgerEntries.filter(e => e.type === 'DEBIT').reduce((s, e) => s + e.amount, 0);
+      const totalCredits = state.ledgerEntries.filter(e => e.type === 'CREDIT').reduce((s, e) => s + e.amount, 0);
+      const balanced = Math.abs(totalDebits - totalCredits) < 0.001;
+
+      const invText = document.getElementById('ledger-invariant-text');
+      if (invText) {
+        invText.innerText = `Σ Debits ($${totalDebits.toLocaleString('en-US', { minimumFractionDigits: 2 })}) = Σ Credits ($${totalCredits.toLocaleString('en-US', { minimumFractionDigits: 2 })}) • ${balanced ? 'Zero-Variance Verified' : 'Imbalance Detected'}`;
+      }
+
+      tbody.innerHTML = state.ledgerEntries.map(e => `
+        <tr class="hover:bg-slate-800/40">
+          <td class="py-3 px-4 text-slate-400">#${e.id}</td>
+          <td class="py-3 px-4 text-slate-500 text-[11px]">${e.time}</td>
+          <td class="py-3 px-4 text-cyan-400 font-semibold">${e.ref}</td>
+          <td class="py-3 px-4 text-slate-300"><span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono">${e.account}</span></td>
+          <td class="py-3 px-4">
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold ${e.type === 'DEBIT' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}">${e.type}</span>
+          </td>
+          <td class="py-3 px-4 text-right font-bold ${e.type === 'DEBIT' ? 'text-cyan-400' : 'text-emerald-400'}">${e.type === 'DEBIT' ? '-' : '+'}$${e.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+          <td class="py-3 px-4 text-slate-400 font-sans truncate max-w-xs">${e.desc || 'Ledger settlement'}</td>
+        </tr>
+      `).join('');
+    }
+
+    function exportLedgerCSV() {
+      const rows = [
+        ['Entry ID', 'Timestamp', 'Transaction Ref', 'Account', 'Type', 'Amount', 'Description'],
+        ...state.ledgerEntries.map(e => [e.id, e.time, e.ref, e.account, e.type, e.amount.toFixed(2), `"${e.desc}"`])
+      ];
+      const csv = 'data:text/csv;charset=utf-8,' + rows.map(r => r.join(',')).join('\n');
+      const link = document.createElement('a');
+      link.href = encodeURI(csv);
+      link.download = 'balancevault-ledger.csv';
+      link.click();
+    }
+
+    function renderReports() {
+      const activeUser = state.users.find(u => u.email.startsWith(state.currentUser)) || state.users[0];
+      const myAccounts = activeUser.role === 'ADMIN' ? state.accounts : state.accounts.filter(a => a.userId === activeUser.id);
+      const totalAssets = myAccounts.reduce((sum, a) => sum + a.balance, 0);
+      const deposits = state.transactions.filter(t => t.type === 'DEPOSIT').reduce((s, t) => s + t.amount, 0);
+      const transfers = state.transactions.filter(t => t.type === 'TRANSFER').reduce((s, t) => s + t.amount, 0);
+
+      const taEl = document.getElementById('report-total-assets');
+      const tiEl = document.getElementById('report-total-inflow');
+      const toEl = document.getElementById('report-total-outflow');
+      if (taEl) taEl.innerText = '$' + totalAssets.toLocaleString('en-US', { minimumFractionDigits: 2 });
+      if (tiEl) tiEl.innerText = '+$' + deposits.toLocaleString('en-US', { minimumFractionDigits: 2 });
+      if (toEl) toEl.innerText = '$' + transfers.toLocaleString('en-US', { minimumFractionDigits: 2 });
+
+      const typesContainer = document.getElementById('report-types-container');
+      if (!typesContainer) return;
+      const typeMap = {};
+      myAccounts.forEach(a => {
+        typeMap[a.type] = (typeMap[a.type] || 0) + a.balance;
+      });
+
+      typesContainer.innerHTML = Object.entries(typeMap).map(([type, bal]) => {
+        const pct = totalAssets > 0 ? ((bal / totalAssets) * 100).toFixed(1) : 0;
+        return `
+          <div class="space-y-1">
+            <div class="flex justify-between text-xs">
+              <span class="font-semibold text-slate-200">${type}</span>
+              <span class="font-mono text-slate-400">$${bal.toLocaleString('en-US', { minimumFractionDigits: 2 })} (${pct}%)</span>
+            </div>
+            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+              <div class="bg-gradient-to-r from-cyan-500 to-indigo-500 h-2 rounded-full" style="width: ${Math.max(3, pct)}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function exportReportsCSV() {
+      const rows = [
+        ['BALANCEVAULT FINANCIAL SUMMARY'],
+        ['Generated', new Date().toISOString()],
+        ['Account Type', 'Total Balance (USD)'],
+        ...state.accounts.map(a => [a.name, a.number, a.type, a.balance.toFixed(2)])
+      ];
+      const csv = 'data:text/csv;charset=utf-8,' + rows.map(r => r.join(',')).join('\n');
+      const link = document.createElement('a');
+      link.href = encodeURI(csv);
+      link.download = 'balancevault-report.csv';
+      link.click();
+    }
+
+    function renderProfile() {
+      const activeUser = state.users.find(u => u.email.startsWith(state.currentUser)) || state.users[0];
+      const nameEl = document.getElementById('profile-name');
+      const emailEl = document.getElementById('profile-email');
+      const roleEl = document.getElementById('profile-role');
+      if (nameEl) nameEl.innerText = activeUser.name;
+      if (emailEl) emailEl.innerText = activeUser.email;
+      if (roleEl) roleEl.innerText = activeUser.role;
+    }
+
+    window.addEventListener('hashchange', () => {
+      const hash = window.location.hash.replace('#', '') || 'dashboard';
+      switchTab(hash);
+    });
 
     function switchDemoUser(val) {
       state.currentUser = val;
@@ -1557,6 +1824,9 @@
 
     // Initial render
     render();
+    if (window.location.hash) {
+      switchTab(window.location.hash.replace('#', ''));
+    }
   </script>
   <!-- TOAST NOTIFICATION CONTAINER -->
   <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
