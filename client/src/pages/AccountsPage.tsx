@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Account, AccountType, AccountStatus } from '../types/index.js';
 import { api } from '../services/api.js';
-import { useAuth } from '../context/AuthContext.js';
 import {
   Wallet,
   Plus,
@@ -25,9 +24,6 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
   onOpenCreateAccount,
   onRefresh,
 }) => {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'ADMIN';
-
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | AccountType>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | AccountStatus>('ALL');
