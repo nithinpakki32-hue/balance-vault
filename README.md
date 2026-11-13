@@ -66,6 +66,24 @@ You can test the three distinct personas and permission tiers directly on the li
 
 ---
 
+## ⚡ Unified Single-Page Application (SPA) Architecture
+
+BalanceVault features a reactive Single-Page Application (SPA) architecture with zero-reload section navigation, browser URL hash synchronization (`#hash`), and responsive mobile drawer navigation:
+
+| Section | Route Hash | Capabilities & Financial Security Controls |
+|:---|:---|:---|
+| 📊 **Dashboard** | `#dashboard` | Consolidated net worth, active segregated vaults, recent transactions, and live status. |
+| 💼 **Vault Accounts** | `#accounts` | Segregated balances, account number copy shortcuts, type/status filters, and top-up modal. |
+| 🔄 **Transactions** | `#transactions` | Multi-category transaction explorer (Transfer, Deposit, Withdrawal), date/amount range filters. |
+| 📝 **Account Requests** | `#requests` | **Mandatory Approval Workflow:** Account Holders propose new vaults (`PENDING`); Admins review KYC and approve or reject with remarks. |
+| 📖 **Double-Entry Ledger**| `#ledger` | Immutable pairing journal ($\sum \text{Debits} \equiv \sum \text{Credits}$), entry explorer, and CSV/JSON export. |
+| 📈 **Financial Reports** | `#reports` | Asset allocation distribution by account type, transaction volume analytics, CSV/JSON/Print export. |
+| 🛡️ **Security Center** | `#security` | Real-time SOC telemetry (Admin), compliance audit trails (Auditor), and session diagnostics (Account Holder). |
+| 👤 **User Profile** | `#profile` | User identity clearance, linked vault containers, cryptographic password reset, and session security. |
+| 👥 **User Directory** | `#admin-users`| RBAC management directory (Admin only). |
+
+---
+
 ## 🏛 Financial Ledger Mechanics & Invariants
 
 ```mermaid
@@ -229,6 +247,15 @@ FINANCIAL LEDGER DISCREPANCY REPORT: ZERO DISCREPANCIES DETECTED
 | `POST` | `/api/transactions/transfer`| Authenticated | Atomic transfer with row-level locks & idempotency |
 | `GET` | `/api/transactions` | Authenticated | Transaction history |
 | `GET` | `/api/ledger` | Authenticated | Double-entry ledger audit inspection |
+
+### Account Opening Requests & Approval Workflow
+| Method | Endpoint | Role | Description |
+|---|---|---|---|
+| `POST` | `/api/account-requests` | `ACCOUNT_HOLDER` | Submit account opening proposal (status: `PENDING`) |
+| `GET` | `/api/account-requests` | Authenticated | View submitted requests (members view own, admins view all) |
+| `GET` | `/api/admin/account-requests` | `ADMIN`, `AUDITOR` | Institution-wide account opening request queue |
+| `POST` | `/api/admin/account-requests/:id/approve` | `ADMIN` | Atomically approve request, provision account, and commit ledger |
+| `POST` | `/api/admin/account-requests/:id/reject` | `ADMIN` | Reject request with recorded administrator remarks |
 
 ### Administration, RBAC & SOC
 | Method | Endpoint | Role | Description |
